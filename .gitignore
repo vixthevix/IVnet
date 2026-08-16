@@ -1,0 +1,3 @@
+#ignore binaries and compile tool for now
+compile
+bin
