@@ -19,6 +19,7 @@ For development, follow Vanilla by MattKC for Linux-to-WiFidongle support to upd
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <unistd.h>
+#include <dirent.h>
 
 unsigned char* ip_to_bytes(struct sockaddr* sa) {
     if (!sa) return NULL;
@@ -77,6 +78,75 @@ int main(int argc, char** argv) {
     //char* dongleIP = argv[2];
     char* DNS = argv[2];
     int status = 0;
+    
+    bool dns_default = false;
+    if (strcmp(DNS, "0") == 0) {
+        printf("Using default DNS...\n");
+        DNS = (char*)calloc(strlen("178.62.43.212") + 1, 1);
+        strcpy(DNS, "178.62.43.212");
+        dns_default = true;
+    }
+    
+    //verify dongle
+    struct dirent* dentry;
+    DIR* directory = opendir("/sys/class/net");
+    if (!directory) {
+        printf("could not open /sys/class/net to verify %s.\n", dongle);
+        if (dns_default && DNS) free(DNS);
+        return 1;
+    }
+    bool dongle_valid = false;
+    while ((dentry = readdir(directory)) != NULL) {
+        if (strcmp(dongle, dentry->d_name) == 0) {
+            dongle_valid = true;
+            break;
+        }
+    }
+    closedir(directory);
+    if (!dongle_valid) {
+        printf("%s is not a valid NIC.\n");
+        if (dns_default && DNS) free(DNS);
+        return 1;
+    }
+
+    //verify DNS
+    if (!DNS) {
+        printf("DNS invalid\n");
+        if (dns_default && DNS) free(DNS);
+        return 1;
+    }
+    char dns_valid_buffer[10] = {0};
+    int dns_valid_index = 0;
+    int dns_dot_count = 0;
+    for (size_t i = 0; i < strlen(DNS); i++) {
+        if (DNS[i] == '.') {
+            dns_dot_count++;
+            int num = atoi(dns_valid_buffer);
+            if (num < 0 || num > 255) {
+                printf("DNS invalid\n");
+                if (dns_default && DNS) free(DNS);
+                return 1;
+            }
+            memset(dns_valid_buffer, 0, dns_valid_index);
+            dns_valid_index = 0;
+            continue;
+        }
+        dns_valid_buffer[dns_valid_index++] = DNS[i];
+        if (i == strlen(DNS) - 1) {
+            int num = atoi(dns_valid_buffer);
+            if (num < 0 || num > 255) {
+                printf("DNS invalid\n");
+                if (dns_default && DNS) free(DNS);
+                return 1;
+            }
+        }
+    }
+    
+    if (dns_dot_count != 3) {
+        printf("DNS invalid\n");
+        if (dns_default && DNS) free(DNS);
+        return 1;
+    }
 
 
     //actually, ignore providing an ip address, we can find one ourselves.
@@ -84,6 +154,7 @@ int main(int argc, char** argv) {
     status = getifaddrs(&ifa_head);
     if (status != 0 || !ifa_head) {
         printf("Could not retreive list of IP addresses for binding with %s\n", dongle);
+        if (dns_default && DNS) free(DNS);
         return 1;
     }
     struct ifaddrs* cur_address = ifa_head;
@@ -193,6 +264,7 @@ int main(int argc, char** argv) {
 
     if (!ipValid) {
         printf("ip collision, error\n");
+        if (dns_default && DNS) free(DNS);
         return 1;
     }
     
@@ -208,7 +280,11 @@ int main(int argc, char** argv) {
     char dongleIP_set[256] = {0};
     sprintf(dongleIP_set, "ip link set dev %1$s down && ip addr add %2$u.%3$u.%4$u.%5$u/24 dev %1$s && ip link set dev %1$s up", dongle, dongle_ip[0], dongle_ip[1], dongle_ip[2], dongle_ip[3]);
     status = system(dongleIP_set);
-    if (status == -1) return 1; //error
+    if (status == -1) {
+        printf("could not set up %s with new ip address\n", dongle);
+        if (dns_default && DNS) free(DNS);
+        return 1;
+    }
     else {
         int exit_status = WEXITSTATUS(status);
         //do something here
@@ -218,17 +294,19 @@ int main(int argc, char** argv) {
     //write to a folder
     status = mkdir("config", 0777);
     
+    //hostapd is a program that allows for a Network Interface Card to act like an Access Point, needed for the DS to connect to.
     const char* hostapd_contents = 
-    "interface=%s\n"
+    "interface=%s\n" //dongle name
     "ssid=IVnet-Source\n"
     "hw_mode=g\n"
     "channel=6\n"
     "auth_algs=1";
     
+    //dnsmasq is a program that, for our purposes, will allow the dongle to hand out ip addresses to connected devices to be recognised for communication, such as the Nintendo DS.
     const char* dnsmasq_contents = 
-    "interface=%1$s\n"
-    "dhcp-range=%2$u.%3$u.%4$u.10,%2$u.%3$u.%4$u.50,12h\n"
-    "dhcp-options=6,%5$s\n";
+    "interface=%1$s\n" //dongle name
+    "dhcp-range=%2$u.%3$u.%4$u.10,%2$u.%3$u.%4$u.50,12h\n" //dongle access point range
+    "dhcp-options=6,%5$s\n"; //DNS
 
     FILE* hostapd = fopen("config/hostapd.conf", "w");
     fprintf(hostapd, hostapd_contents, dongle);
@@ -239,20 +317,29 @@ int main(int argc, char** argv) {
     fclose(dnsmasq);
 
     //fourth, write to ip_forward and set traffic rule in iptables
+    //ip_forward is a parameter file that turns your Linux computer into a router
     FILE* ip_forward = fopen("/proc/sys/net/ipv4/ip_forward", "w");
     fwrite("1", sizeof(char), 1, ip_forward);
     fclose(ip_forward);
-
+    
+    //iptables is a program that configures the Linux Firewall.
+    //iptables works with multiple tables, we are using the nat table, which means "network address translation" ie. port forwarding
+    //each table has a set of rules to follow called chains. We are going to follow the POSTROUTING chain within nat, which deals with altering outgoing packets from the local network
+    //the MASQUERADE jump option tells us that "if we get a matching valid packet, set the source address to the router connected to the internet", to allow for outgoing packets
     char traffic_rule[100] = {0};
     sprintf(traffic_rule, "iptables -t nat -A POSTROUTING -j MASQUERADE");
     system(traffic_rule);
 
     //fifth, fork two child processes
     pid_t p = fork();
-    if (p < 0) return 1; //error
+    if (p < 0) {
+        printf("could not fork into hostapd\n");
+        if (dns_default && DNS) free(DNS);
+        return 1;
+    }
     else if (p == 0) { //child process
         char* hostapd_args[] = {
-            "./config/dnsmasq.conf",
+            "./config/hostapd.conf",
             NULL
         };
 
@@ -260,16 +347,22 @@ int main(int argc, char** argv) {
     }
     else { //parent
         p = fork();
-        if (p < 0) return 1; //error
+        if (p < 0) {
+            printf("could not fork into dnsmasq\n");
+            if (dns_default && DNS) free(DNS);
+            return 1;
+        }
         else if (p == 0) { //child
             char* dnsmasq_args[] = {
                 "-C",
                 "./config/dnsmasq.conf",
-                "-d",
+                "-d", //no daemon mode, for debugging purposes (yeah its just debug mode)
                 NULL
             };
             execvp("dnsmasq", dnsmasq_args);
         }
     }
     //finally, wait for exit to gracefully clean up and close
+
+    if (dns_default && DNS) free(DNS);
 }
