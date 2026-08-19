@@ -139,6 +139,20 @@ Sprite* newSprite(SpriteType type, const char* source, int32_t x, int32_t y, uin
     return NULL;
 }
 
+Sprite* cloneSprite(Sprite* sprite) {
+    Sprite* new = (Sprite*) malloc(sizeof(Sprite));
+    new->x = sprite->x;
+    new->y = sprite->y;
+    new->width = sprite->width;
+    new->height = sprite->height;
+    new->colour = sprite->colour;
+    new->type = sprite->type;
+        
+    //may have trouble cloning the data
+
+    return NULL;
+}
+
 bool displaySprite(Sprite* sprite) {
     if (!sprite || !(sprite->data)) return false;
     
@@ -163,7 +177,7 @@ bool displaySprite(Sprite* sprite) {
 
 //IMAGE specific function
 bool imageHovering(Sprite* sprite) {
-    if (!sprite || !sprite->data || sprite->type != IMAGE) return false;
+    if (!sprite || !sprite->data) return false;
 
     //we need to get the bounding x and y
     uint32_t
@@ -210,6 +224,64 @@ void textUpdate(Sprite* sprite, const char* new_text) {
     *data = (char*) calloc(strlen(new_text) + 1, sizeof(char));
     strcpy(*data, new_text);
 }
+
+bool textHovering(Sprite* sprite) {
+    if (!sprite || !sprite->data || sprite->type != TEXT) return false;
+
+    //to check, we need a height and width.
+    //for this, we need to count the maximum num of chars before a newline (width)
+    //and number of newlines (height)
+    
+    uint32_t font_size = sprite->width;
+    
+    uint32_t width = font_size;
+    uint32_t width_cur = 0;
+    uint32_t height = font_size;
+    char** data = (char**)sprite->data;
+
+    for (uint32_t i = 0; i < strlen(*data); i++) {
+        if ((*data)[i] != '\n') {
+            char letter[2] = {(*data)[i], 0};
+            width_cur += MeasureText(letter, font_size);
+        }
+        else {
+            height += font_size;
+            if (width_cur > width) width = width_cur;
+            width_cur = 0;
+        }
+    }
+    if (width_cur > width) width = width_cur;
+    
+    
+    
+
+    uint32_t
+    x_low = sprite->x,
+    y_low = sprite->y,
+    x_high = sprite->x + width,
+    y_high = sprite->y + height;
+
+    Vector2 mouse = GetMousePosition();
+    return ((x_low <= mouse.x && mouse.x <= x_high) && (y_low <= mouse.y && mouse.y <= y_high));
+
+}
+
+void textHoveringChange(Sprite* sprite, const char* hovering_text, Color hovering_colour, const char* not_hovering_text, Color not_hovering_colour) {
+    if (!sprite || !sprite->data || sprite->type != TEXT) return;
+
+    //only change text if neither is NULL
+    
+    if (textHovering(sprite)) {
+        if (hovering_text) textUpdate(sprite, hovering_text);
+        sprite->colour = hovering_colour;
+    }
+    else {
+        if (not_hovering_text) textUpdate(sprite, not_hovering_text);
+        sprite->colour = not_hovering_colour;
+    }
+
+}
+
 
 typedef struct Scene {
     Sprite** sprites;
@@ -302,35 +374,100 @@ int main() {
     Sprite* info_text = newSprite(TEXT, text, 15, 150, TEXT_SIZE(20), BLACK);
     free(text);
 
-    Sprite* info_return = newSprite(IMAGE, "assets/img/return.png", 0, 0, 50, 50, WHITE);
-    //Image return_unpressed = LoadImage("assets/img/return.png");
-    //ImageResize(&return_unpressed, info_return->width, info_return->height);
-    //Image return_pressed = LoadImage("assets/img/return_pressed.png");
-    //ImageResize(&return_pressed, info_return->width, info_return->height);
-
+    Sprite* info_return = newSprite(IMAGE, "assets/img/return.png", 1, 1, 50, 50, WHITE);
     
+    Color teto_colour = {255, 255, 255, 100};
+    Sprite* teto = newSprite(IMAGE, "assets/img/teto.png", 250, 0, 256, 256, teto_colour);
+    
+    addScene(info_menu, teto);
     addScene(info_menu, info_text);
     addScene(info_menu, info_return);
-
     
     //with the setup, we need to pick a NIC and a DNS, and then we can start connecting
-
+    const uint32_t option_x = 100, option_y = 200, option_size = 20;
+    const Color option_chosen = BLUE, option_not_chosen = BLACK;
+    const uint32_t forward_x = 350, backward_x = 50, forward_y = 350, backward_y = forward_y, arrow_w = 100, arrow_h = arrow_w;
 
     Scene* nic_menu = newScene();
 
     char nic_list[256][75] = {0};
     uint32_t nic_count = 0;
     const uint8_t nic_screen_count = 3;
-    //we need a series of buttons for each string in nic_list. go with 3, and then add an arrow if needed.
+    uint32_t nic_index = 0;
 
-    Sprite* nic_1 = newSprite(TEXT, "Placeholder", 250, 100, TEXT_SIZE(20), BLACK);
-    Sprite* nic_2 = newSprite(TEXT, "Placeholder", 250, 150, TEXT_SIZE(20), BLACK);
-    Sprite* nic_3 = newSprite(TEXT, "Placeholder", 250, 200, TEXT_SIZE(20), BLACK);
+    char chosen_nic[75] = {0};
+
+    Sprite* nic_logo = newSprite(IMAGE, "assets/img/nic_logo.png", 125, -25, IMAGE_SIZE_NATIVE, WHITE);
+
+    //we need a series of buttons for each string in nic_list. go with 3, and then add an forward if needed.
+
+    Sprite* nic_1 = newSprite(TEXT, "Placeholder", option_x, option_y, TEXT_SIZE(option_size), option_not_chosen);
+    Sprite* nic_2 = newSprite(TEXT, "Placeholder", option_x, option_y + 50, TEXT_SIZE(option_size), option_not_chosen);
+    Sprite* nic_3 = newSprite(TEXT, "Placeholder", option_x, option_y + 100, TEXT_SIZE(option_size), option_not_chosen);
+
+    Sprite* nic_return = newSprite(IMAGE, "assets/img/return.png", 1, 1, 50, 50, WHITE);
     
+    Sprite* nic_forward = newSprite(IMAGE, "assets/img/forward.png", forward_x, forward_y, arrow_w, arrow_h, WHITE);
+    Sprite* nic_backward = newSprite(IMAGE, "assets/img/backward.png", backward_x, backward_y, arrow_w, arrow_h, WHITE);
+    
+    addScene(nic_menu, nic_logo);
     addScene(nic_menu, nic_1);
     addScene(nic_menu, nic_2);
     addScene(nic_menu, nic_3);
+    addScene(nic_menu, nic_return);
+    addScene(nic_menu, nic_forward);
+    addScene(nic_menu, nic_backward);
 
+    Scene* dns_menu = newScene();
+
+    //lets use a set amount of DNS
+
+    char* dns_list[] = {
+        "178.62.43.212 - PokeClassicNetwork",
+        //"100.100.100.100",
+        //"45.6.3.1 - my network",
+    };
+    uint32_t dns_count = sizeof(dns_list) / sizeof(dns_list[0]);
+    uint32_t dns_index = 0;
+
+    printf("dns count: %u\n", dns_count);
+    char chosen_dns[20] = {0};
+
+    Sprite* dns_logo = newSprite(IMAGE, "assets/img/dns_logo.png", 125, -25, IMAGE_SIZE_NATIVE, WHITE);
+
+    //same deal with nic, have 3 viewable at a time
+    Sprite* dns_1 = newSprite(TEXT, "Placeholder", option_x, option_y, TEXT_SIZE(option_size), option_not_chosen);
+    Sprite* dns_2 = newSprite(TEXT, "Placeholder", option_x, option_y + 50, TEXT_SIZE(option_size), option_not_chosen);
+    Sprite* dns_3 = newSprite(TEXT, "Placeholder", option_x, option_y + 100, TEXT_SIZE(option_size), option_not_chosen);
+    
+    Sprite* dns_return = newSprite(IMAGE, "assets/img/return.png", 1, 1, 50, 50, WHITE);
+    
+    Sprite* dns_forward = newSprite(IMAGE, "assets/img/forward.png", forward_x, forward_y, arrow_w, arrow_h, WHITE);
+    Sprite* dns_backward = newSprite(IMAGE, "assets/img/backward.png", backward_x, backward_y, arrow_w, arrow_h, WHITE);
+    
+    addScene(dns_menu, dns_logo);
+    addScene(dns_menu, dns_1);
+    addScene(dns_menu, dns_2);
+    addScene(dns_menu, dns_3);
+    addScene(dns_menu, dns_return);
+    addScene(dns_menu, dns_forward);
+    addScene(dns_menu, dns_backward);
+
+    //loading screen (before receiving confirmation from child process)
+
+    Scene* loading_menu = newScene();
+
+    Sprite* loading_display = newSprite(IMAGE, "assets/img/loading.png", 100, 100, IMAGE_SIZE_NATIVE, WHITE);
+
+    addScene(loading_menu, loading_display);
+    
+    //the actual scene when we can finally link up the ds
+    Scene* connection_menu = newScene();
+    
+
+    //add a back button
+
+    
     cur_scene = main_menu;
     
     while (!WindowShouldClose()) {
@@ -363,14 +500,156 @@ int main() {
                 for (uint32_t i = 0; i < nic_count; i++) {
                     printf("%s\n", nic_list[i]);
                 }
+                
+                if (nic_count > 0) {
+                    //get the first 3
+                    uint8_t i_1 = 0 % nic_count;
+                    uint8_t i_2 = 1 % nic_count;
+                    uint8_t i_3 = 2 % nic_count;
 
-                cur_scene = info_menu; //nic_menu
+                    textUpdate(nic_1, nic_list[i_1]);
+                    textUpdate(nic_2, nic_list[i_2]);
+                    textUpdate(nic_3, nic_list[i_3]);
+                }
+
+
+                cur_scene = nic_menu; //nic_menu
             }
-        } 
+        }
+        else if (cur_scene == nic_menu) {
+            
+            memset(chosen_nic, 0, strlen(chosen_nic));
+            nic_index = 0;
+
+            textHoveringChange(nic_1, NULL, RED, NULL, BLACK);
+            textHoveringChange(nic_2, NULL, RED, NULL, BLACK);
+            textHoveringChange(nic_3, NULL, RED, NULL, BLACK);
+            imageHoveringChange(nic_return, "assets/img/return_pressed.png", "assets/img/return.png");
+            imageHoveringChange(nic_forward, "assets/img/forward_pressed.png", "assets/img/forward.png");
+            imageHoveringChange(nic_backward, "assets/img/backward_pressed.png", "assets/img/backward.png");
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                char* choice = NULL;
+                if (textHovering(nic_1)) {
+                    char** data = (char**)nic_1->data;
+                    choice = *data;
+                }
+                else if (textHovering(nic_2)) {
+                    char** data = (char**)nic_2->data;
+                    choice = *data;
+                }
+                else if (textHovering(nic_3)) {
+                    char** data = (char**)nic_3->data;
+                    choice = *data;
+                }
+                else if (imageHovering(nic_return)) {
+                    printf("nic returning to main\n");
+                    cur_scene = main_menu;
+                }
+                else if (imageHovering(nic_forward)) {
+                    nic_index = (nic_index + 3) % nic_count;
+                    textUpdate(nic_1, nic_list[(nic_index + 0) % nic_count]);
+                    textUpdate(nic_2, nic_list[(nic_index + 1) % nic_count]);
+                    textUpdate(nic_3, nic_list[(nic_index + 2) % nic_count]);
+                }
+                else if (imageHovering(nic_backward)) {
+                    nic_index = (nic_index - 3) % nic_count;
+                    textUpdate(nic_1, nic_list[(nic_index + 0) % nic_count]);
+                    textUpdate(nic_2, nic_list[(nic_index + 1) % nic_count]);
+                    textUpdate(nic_3, nic_list[(nic_index + 2) % nic_count]);
+                }
+
+                if (choice != NULL) {
+                    strcpy(chosen_nic, choice);
+                    printf("chosen nic: %s\n", chosen_nic);
+                    
+                    //we now have to load up our DNS stuff
+
+                    if (dns_count > 0) {
+                        printf("all dns: %s\n", dns_list[0]);
+                        textUpdate(dns_1, dns_list[0 % dns_count]);
+                        textUpdate(dns_2, dns_list[1 % dns_count]);
+                        textUpdate(dns_3, dns_list[2 % dns_count]);
+                    }
+
+                    cur_scene = dns_menu;
+                }
+            }
+        }
+        else if (cur_scene == dns_menu) {
+            if (chosen_dns) memset(chosen_dns, 0, strlen(chosen_dns));
+            dns_index = 0;
+            
+            textHoveringChange(dns_1, NULL, RED, NULL, BLACK);
+            textHoveringChange(dns_2, NULL, RED, NULL, BLACK);
+            textHoveringChange(dns_3, NULL, RED, NULL, BLACK);
+            imageHoveringChange(dns_return, "assets/img/return_pressed.png", "assets/img/return.png");
+            imageHoveringChange(dns_forward, "assets/img/forward_pressed.png", "assets/img/forward.png");
+            imageHoveringChange(dns_backward, "assets/img/backward_pressed.png", "assets/img/backward.png");
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                char* choice = NULL;
+                if (textHovering(dns_1)) {
+                    char** data = (char**)dns_1->data;
+                    choice = *data;
+                }
+                else if (textHovering(dns_2)) {
+                    char** data = (char**)dns_2->data;
+                    choice = *data;
+                }
+                else if (textHovering(dns_3)) {
+                    char** data = (char**)dns_3->data;
+                    choice = *data;
+                }
+                else if (imageHovering(dns_return)) {
+                    printf("dns returning to nic\n");
+                    cur_scene = nic_menu;
+                }
+                else if (imageHovering(dns_forward)) {
+                    dns_index = (dns_index + 3) % dns_count;
+                    textUpdate(dns_1, dns_list[(dns_index + 0) % dns_count]);
+                    textUpdate(dns_2, dns_list[(dns_index + 1) % dns_count]);
+                    textUpdate(dns_3, dns_list[(dns_index + 2) % dns_count]);
+                }
+                else if (imageHovering(dns_backward)) {
+                    dns_index = (dns_index - 3) % dns_count;
+                    textUpdate(dns_1, dns_list[(dns_index + 0) % dns_count]);
+                    textUpdate(dns_2, dns_list[(dns_index + 1) % dns_count]);
+                    textUpdate(dns_3, dns_list[(dns_index + 2) % dns_count]);
+                }
+
+                if (choice != NULL) {
+                    //choice contains our data. we need to remove anything after and including a dash
+                    //(the description of the dns, if it exists)
+                    size_t dash_index = strlen(choice);
+                    char* dash = strstr(choice, "-");
+                    if (dash != NULL) {
+                        dash_index -= strlen(dash);
+                        //we should also check for any whitespace from dash_index backwards;
+                        dash_index--;
+                        while (choice[dash_index] == ' ') dash_index--;
+                        dash_index++;
+                    }
+
+                    strncpy(chosen_dns, choice, dash_index);
+                    printf("chosen dns: %sWAAAAAAA\n", chosen_dns);
+
+
+                    //we now have a chosen dns and nic.
+                    //fork and set up a child process.
+                    
+                    cur_scene = loading_menu; 
+                }
+            }
+            
+        }
+        else if (cur_scene == loading_menu) {
+            //preferably, we want the pipe to be non-blocking, so that we can check and display at the same time.
+            //do this once the dongle arrives
+        }
         else if (cur_scene == info_menu) {
             imageHoveringChange(info_return, "assets/img/return_pressed.png", "assets/img/return.png");
             if (imageHovering(info_return) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) cur_scene = main_menu;
         }
+
 
         BeginDrawing();
         ClearBackground(WHITE);
@@ -383,6 +662,9 @@ int main() {
     
     freeScene(main_menu);
     freeScene(info_menu);
+    freeScene(nic_menu);
+    freeScene(dns_menu);
+    freeScene(connection_menu);
     cur_scene = NULL;
     //UnloadImage(info_unpressed);
     //UnloadImage(info_pressed);
