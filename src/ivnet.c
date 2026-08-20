@@ -6,6 +6,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <dirent.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/wait.h>
 
 char* extractText(const char* path) {
     if (!path) return NULL;
@@ -339,6 +343,10 @@ bool freeScene(Scene* scene) {
 
 
 int main() {
+    
+    //IPC stuff
+    pid_t back_p = 0;
+    int pipefd[2] = {0};
    
     SetTraceLogLevel(LOG_NONE);
 
@@ -362,9 +370,18 @@ int main() {
    
     Sprite* main_start = newSprite(IMAGE, "assets/img/start.png", 125, 150, IMAGE_SIZE_NATIVE, WHITE);
 
+    //testing an animated gif
+    //Sprite* teto_dance = newSprite(IMAGE, "teto_dance.gif", 0, 0, IMAGE_SIZE_NATIVE, WHITE);
+    //Texture2D* teto_dance_data = (Texture2D*)teto_dance->data;
+    //UnloadTexture(*teto_dance_data);
+    //Image teto_dance_gif = LoadImageAnim("teto_dance.gif", &(int){ 11 });
+    //*teto_dance_data = LoadTextureFromImage(teto_dance_gif);
+
+
     addScene(main_menu, logo);
     addScene(main_menu, info);
     addScene(main_menu, main_start);
+    //addScene(main_menu, teto_dance);
     
     
     Scene* info_menu = newScene();
@@ -464,9 +481,13 @@ int main() {
     //the actual scene when we can finally link up the ds
     Scene* connection_menu = newScene();
     
+    Sprite* connection_logo = newSprite(IMAGE, "assets/img/success.png", 125, -25, IMAGE_SIZE_NATIVE, WHITE);
 
     //add a back button
+    Sprite* connection_stop = newSprite(IMAGE, "assets/img/connection_stop.png", 125, 350, IMAGE_SIZE_NATIVE, WHITE);
 
+    addScene(connection_menu, connection_logo);
+    addScene(connection_menu, connection_stop);
     
     cur_scene = main_menu;
     
@@ -521,9 +542,9 @@ int main() {
             memset(chosen_nic, 0, strlen(chosen_nic));
             nic_index = 0;
 
-            textHoveringChange(nic_1, NULL, RED, NULL, BLACK);
-            textHoveringChange(nic_2, NULL, RED, NULL, BLACK);
-            textHoveringChange(nic_3, NULL, RED, NULL, BLACK);
+            textHoveringChange(nic_1, NULL, option_chosen, NULL, option_not_chosen);
+            textHoveringChange(nic_2, NULL, option_chosen, NULL, option_not_chosen);
+            textHoveringChange(nic_3, NULL, option_chosen, NULL, option_not_chosen);
             imageHoveringChange(nic_return, "assets/img/return_pressed.png", "assets/img/return.png");
             imageHoveringChange(nic_forward, "assets/img/forward_pressed.png", "assets/img/forward.png");
             imageHoveringChange(nic_backward, "assets/img/backward_pressed.png", "assets/img/backward.png");
@@ -579,9 +600,10 @@ int main() {
             if (chosen_dns) memset(chosen_dns, 0, strlen(chosen_dns));
             dns_index = 0;
             
-            textHoveringChange(dns_1, NULL, RED, NULL, BLACK);
-            textHoveringChange(dns_2, NULL, RED, NULL, BLACK);
-            textHoveringChange(dns_3, NULL, RED, NULL, BLACK);
+            textHoveringChange(dns_1, NULL, option_chosen, NULL, option_not_chosen);
+            textHoveringChange(dns_2, NULL, option_chosen, NULL, option_not_chosen);
+            textHoveringChange(dns_3, NULL, option_chosen, NULL, option_not_chosen);
+            
             imageHoveringChange(dns_return, "assets/img/return_pressed.png", "assets/img/return.png");
             imageHoveringChange(dns_forward, "assets/img/forward_pressed.png", "assets/img/forward.png");
             imageHoveringChange(dns_backward, "assets/img/backward_pressed.png", "assets/img/backward.png");
@@ -630,12 +652,48 @@ int main() {
                     }
 
                     strncpy(chosen_dns, choice, dash_index);
-                    printf("chosen dns: %sWAAAAAAA\n", chosen_dns);
+                    printf("chosen dns: %s\n", chosen_dns);
 
 
                     //we now have a chosen dns and nic.
                     //fork and set up a child process.
+                    //set up the pipe
+
+                    pipe(pipefd);
+
+                    back_p = fork();
+                    if (back_p == 0) { //child - backend
+                        close(pipefd[0]); //child does not read
+
+                        //because execvp will replace this code, we need a different form of communication
+                        //we can replace pipefd[1] with stdout using dup2
+
+                        dup2(pipefd[1], STDOUT_FILENO);
+                        close(pipefd[1]); //no longer using this pipe input
+
+                        char* backend_args[] = {
+                            "pkexec", //run as root
+                            "bin/ivnetback",
+                            chosen_nic,
+                            chosen_dns,
+                            NULL,
+                        };
+                        execvp("pkexec", backend_args);
+                        perror("Could not start backend\n");
+                        //send an error message via printf
+                        printf("0:Could not start backend\n");
+                        fflush(stdout);
+                        exit(1);
+                    }
+                    else { //parent - frontend
+                        //parent doesnt write
+                        close(pipefd[1]);
+                        //set read to be non-blocking
+                        int pipe_flags = fcntl(pipefd[0], F_GETFL, 0);
+                        fcntl(pipefd[0], F_SETFL, pipe_flags | O_NONBLOCK);
+                    }
                     
+
                     cur_scene = loading_menu; 
                 }
             }
@@ -644,6 +702,33 @@ int main() {
         else if (cur_scene == loading_menu) {
             //preferably, we want the pipe to be non-blocking, so that we can check and display at the same time.
             //do this once the dongle arrives
+            char buffer[256] = {0};
+            int bytes_read = read(pipefd[0], buffer, sizeof(buffer));
+            //the format is "status:message"
+            if (bytes_read > 0) {
+                if (buffer[0] == '1') {
+                    perror("Backend success!\n");
+                    cur_scene = connection_menu;
+                }
+                else {
+                    perror("Backend returned an error.\n");
+                    cur_scene = main_menu;
+                }
+            }
+
+        }
+        else if (cur_scene == connection_menu) {
+            imageHoveringChange(connection_stop, "assets/img/connection_stop_pressed.png", "assets/img/connection_stop.png");
+            if (imageHovering(connection_stop) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                //send the signal to stop
+                kill(back_p, SIGTERM);
+                //wait for backend to finish cleaning up
+                waitpid(back_p, NULL, 0);
+                //reset it
+                back_p = -1;
+
+                cur_scene = main_menu;
+            }
         }
         else if (cur_scene == info_menu) {
             imageHoveringChange(info_return, "assets/img/return_pressed.png", "assets/img/return.png");

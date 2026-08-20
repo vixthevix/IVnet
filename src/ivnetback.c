@@ -20,6 +20,18 @@ For development, follow Vanilla by MattKC for Linux-to-WiFidongle support to upd
 #include <ifaddrs.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <signal.h>
+#include <sys/wait.h>
+
+//signal functionality
+
+volatile sig_atomic_t running = 1;
+
+//function to run when a signal is received
+void handle_kill(int sig) {
+    running = 0;
+}
+
 
 unsigned char* ip_to_bytes(struct sockaddr* sa) {
     if (!sa) return NULL;
@@ -68,11 +80,26 @@ int main(int argc, char** argv) {
     //  the name of the dongle as it appears under the WiFi interface devices (use a command to get this)
     //  the ip address to assign to the dongle (if left blank, give a default one)
     //  the DNS to use 
+   
     
-    if (argc < 3) {
-        printf("Sorry, IVnet requires 2 arguments: the name of the WiFi dongle and the DNS to connect to (0 for default).\n");
+    //disable line buffering for printf messaging to work
+    setvbuf(stdout, NULL, _IOLBF, 0);
+
+    signal(SIGTERM, handle_kill); //signal for kill()
+    signal(SIGINT, handle_kill);  //signal for CTRL+C
+    
+    //are we running as root?
+    if (geteuid() != 0) {
+        printf("0:Must run as root\n");
         return 1;
     }
+
+    if (argc < 3) {
+        printf("0:Sorry, IVnet requires 2 arguments: the name of the WiFi dongle and the DNS to connect to (0 for default).\n");
+        return 1;
+    }
+
+
 
     char* dongle = argv[1];
     //char* dongleIP = argv[2];
@@ -81,7 +108,7 @@ int main(int argc, char** argv) {
     
     bool dns_default = false;
     if (strcmp(DNS, "0") == 0) {
-        printf("Using default DNS...\n");
+        perror("Using default DNS...\n");
         DNS = (char*)calloc(strlen("178.62.43.212") + 1, 1);
         strcpy(DNS, "178.62.43.212");
         dns_default = true;
@@ -91,7 +118,7 @@ int main(int argc, char** argv) {
     struct dirent* dentry;
     DIR* directory = opendir("/sys/class/net");
     if (!directory) {
-        printf("could not open /sys/class/net to verify %s.\n", dongle);
+        printf("0:could not open /sys/class/net to verify %s.\n", dongle);
         if (dns_default && DNS) free(DNS);
         return 1;
     }
@@ -104,14 +131,14 @@ int main(int argc, char** argv) {
     }
     closedir(directory);
     if (!dongle_valid) {
-        printf("%s is not a valid NIC.\n");
+        printf("0:%s is not a valid NIC.\n", dongle);
         if (dns_default && DNS) free(DNS);
         return 1;
     }
 
     //verify DNS
     if (!DNS) {
-        printf("DNS invalid\n");
+        printf("0:DNS invalid\n");
         if (dns_default && DNS) free(DNS);
         return 1;
     }
@@ -123,7 +150,7 @@ int main(int argc, char** argv) {
             dns_dot_count++;
             int num = atoi(dns_valid_buffer);
             if (num < 0 || num > 255) {
-                printf("DNS invalid\n");
+                printf("0:DNS invalid\n");
                 if (dns_default && DNS) free(DNS);
                 return 1;
             }
@@ -135,7 +162,7 @@ int main(int argc, char** argv) {
         if (i == strlen(DNS) - 1) {
             int num = atoi(dns_valid_buffer);
             if (num < 0 || num > 255) {
-                printf("DNS invalid\n");
+                printf("0:DNS invalid\n");
                 if (dns_default && DNS) free(DNS);
                 return 1;
             }
@@ -143,7 +170,7 @@ int main(int argc, char** argv) {
     }
     
     if (dns_dot_count != 3) {
-        printf("DNS invalid\n");
+        printf("0:DNS invalid\n");
         if (dns_default && DNS) free(DNS);
         return 1;
     }
@@ -153,7 +180,7 @@ int main(int argc, char** argv) {
     struct ifaddrs* ifa_head = NULL;
     status = getifaddrs(&ifa_head);
     if (status != 0 || !ifa_head) {
-        printf("Could not retreive list of IP addresses for binding with %s\n", dongle);
+        printf("0:Could not retreive list of IP addresses for binding with %s\n", dongle);
         if (dns_default && DNS) free(DNS);
         return 1;
     }
@@ -199,22 +226,22 @@ int main(int argc, char** argv) {
     }
 
 
-    cur = head;
-    while (cur && cur->next) {
-
-        printf("cur address: ");
-        for (int j = 0; j < 16; j++) {
-            if (cur->family == AF_INET) printf("%u ", cur->ip[j]);
-            else if (cur->family == AF_INET6) printf("%02x ", cur->ip[j]);
-        }
-        printf("\ncur netmask: ");
-        for (int j = 0; j < 16; j++) {
-            if (cur->family == AF_INET) printf("%u ", cur->netmask[j]);
-            else if (cur->family == AF_INET6) printf("%02x ", cur->netmask[j]);
-        }
-        printf("\n\n");
-        cur = cur->next;
-    }
+//    cur = head;
+//    while (cur && cur->next) {
+//
+//        printf("cur address: ");
+//        for (int j = 0; j < 16; j++) {
+//            if (cur->family == AF_INET) printf("%u ", cur->ip[j]);
+//            else if (cur->family == AF_INET6) printf("%02x ", cur->ip[j]);
+//        }
+//        printf("\ncur netmask: ");
+//        for (int j = 0; j < 16; j++) {
+//            if (cur->family == AF_INET) printf("%u ", cur->netmask[j]);
+//            else if (cur->family == AF_INET6) printf("%02x ", cur->netmask[j]);
+//        }
+//        printf("\n\n");
+//        cur = cur->next;
+//    }
     //return 0;
     //we now have a list of ip addresses
     //the standard for routers is something like 192.168.X.1/24
@@ -249,13 +276,13 @@ int main(int argc, char** argv) {
 
         if (!collided) {
             //valid ip
-            printf("valid ip: %u.%u.%u.%u\n", dongle_ip[0], dongle_ip[1], dongle_ip[2], dongle_ip[3]);
+            //printf("valid ip: %u.%u.%u.%u\n", dongle_ip[0], dongle_ip[1], dongle_ip[2], dongle_ip[3]);
             ipValid = true;
             break;
         }
 
     }
-    printf("loop complete\n");
+    //printf("loop complete\n");
     
 
     //perform cleanup
@@ -263,7 +290,7 @@ int main(int argc, char** argv) {
     freeifaddrs(ifa_head);
 
     if (!ipValid) {
-        printf("ip collision, error\n");
+        printf("0:ip collision, error\n");
         if (dns_default && DNS) free(DNS);
         return 1;
     }
@@ -281,13 +308,18 @@ int main(int argc, char** argv) {
     sprintf(dongleIP_set, "ip link set dev %1$s down && ip addr add %2$u.%3$u.%4$u.%5$u/24 dev %1$s && ip link set dev %1$s up", dongle, dongle_ip[0], dongle_ip[1], dongle_ip[2], dongle_ip[3]);
     status = system(dongleIP_set);
     if (status == -1) {
-        printf("could not set up %s with new ip address\n", dongle);
+        printf("0:could not set up %s with new ip address\n", dongle);
         if (dns_default && DNS) free(DNS);
         return 1;
     }
     else {
         int exit_status = WEXITSTATUS(status);
         //do something here
+        if (exit_status != 0) {
+            printf("0:could not set up %s with new ip address\n", dongle);
+            if (dns_default && DNS) free(DNS);
+            return 1;
+        }
     }
 
     //third, write new config files
@@ -306,7 +338,7 @@ int main(int argc, char** argv) {
     const char* dnsmasq_contents = 
     "interface=%1$s\n" //dongle name
     "dhcp-range=%2$u.%3$u.%4$u.10,%2$u.%3$u.%4$u.50,12h\n" //dongle access point range
-    "dhcp-options=6,%5$s\n"; //DNS
+    "dhcp-option=6,%5$s\n"; //DNS
 
     FILE* hostapd = fopen("config/hostapd.conf", "w");
     fprintf(hostapd, hostapd_contents, dongle);
@@ -319,6 +351,11 @@ int main(int argc, char** argv) {
     //fourth, write to ip_forward and set traffic rule in iptables
     //ip_forward is a parameter file that turns your Linux computer into a router
     FILE* ip_forward = fopen("/proc/sys/net/ipv4/ip_forward", "w");
+    if (!ip_forward) {
+        printf("0:could not open ip_forward file.\n");
+        if (dns_default && DNS) free(DNS);
+        return 1;
+    }
     fwrite("1", sizeof(char), 1, ip_forward);
     fclose(ip_forward);
     
@@ -331,38 +368,76 @@ int main(int argc, char** argv) {
     system(traffic_rule);
 
     //fifth, fork two child processes
-    pid_t p = fork();
-    if (p < 0) {
-        printf("could not fork into hostapd\n");
+    pid_t hostapd_p = 0, dnsmasq_p = 0;
+
+    hostapd_p = fork();
+    if (hostapd_p < 0) {
+        printf("0:could not fork into hostapd\n");
         if (dns_default && DNS) free(DNS);
         return 1;
     }
-    else if (p == 0) { //child process
+    else if (hostapd_p == 0) { //child process
         char* hostapd_args[] = {
+            "hostapd",
             "./config/hostapd.conf",
             NULL
         };
 
         execvp("hostapd", hostapd_args); 
+        perror("Failed to start hostpad\n");
+        exit(1);
     }
     else { //parent
-        p = fork();
-        if (p < 0) {
-            printf("could not fork into dnsmasq\n");
+        dnsmasq_p = fork();
+        if (dnsmasq_p < 0) {
+            printf("0:could not fork into dnsmasq\n");
             if (dns_default && DNS) free(DNS);
             return 1;
         }
-        else if (p == 0) { //child
+        else if (dnsmasq_p == 0) { //child
             char* dnsmasq_args[] = {
+                "dnsmasq",
                 "-C",
                 "./config/dnsmasq.conf",
                 "-d", //no daemon mode, for debugging purposes (yeah its just debug mode)
                 NULL
             };
             execvp("dnsmasq", dnsmasq_args);
+            perror("Failed to start dnsmasq\n");
+            exit(1);
         }
     }
     //finally, wait for exit to gracefully clean up and close
+    
+    printf("1:Success!\n");
+
+    while (running) {
+        pause(); //do nothing while running
+    }
+    
+    //kill children
+    kill(hostapd_p, SIGKILL);
+    kill(dnsmasq_p, SIGKILL);
+
+    //disable iproutes outgoing traffic
+    memset(traffic_rule, 0, strlen(traffic_rule));
+    sprintf(traffic_rule, "iptables -t nat -D POSTROUTING -j MASQUERADE");
+    system(traffic_rule);
+
+    //revert ip_forward
+    ip_forward = fopen("/proc/sys/net/ipv4/ip_forward", "w");
+    if (ip_forward) {
+        fwrite("0", sizeof(char), 1, ip_forward);
+        fclose(ip_forward);
+    }
+    
+    //restore nmcli control
+    char nmcli_restore[100] = {0};
+    sprintf(nmcli_restore, "nmcli device set %s managed yes", dongle);
+    system(nmcli_restore);
+
 
     if (dns_default && DNS) free(DNS);
+    
+    return 0;
 }
