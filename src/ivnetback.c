@@ -22,6 +22,8 @@ For development, follow Vanilla by MattKC for Linux-to-WiFidongle support to upd
 #include <dirent.h>
 #include <signal.h>
 #include <sys/wait.h>
+#include <sys/prctl.h>
+#include <fcntl.h>
 
 //signal functionality
 
@@ -88,6 +90,8 @@ int main(int argc, char** argv) {
     signal(SIGTERM, handle_kill); //signal for kill()
     signal(SIGINT, handle_kill);  //signal for CTRL+C
     
+    
+
     //are we running as root?
     if (geteuid() != 0) {
         printf("0:Must run as root\n");
@@ -299,14 +303,106 @@ int main(int argc, char** argv) {
     //with a valid ip address, we can do everything else.    
 
     //first, allow for NetworkManager to ignore the dongle.
-    char nmcli_ignore[256] = {0};
-    sprintf(nmcli_ignore, "nmcli device set %s managed no", dongle);
-    system(nmcli_ignore);
+//  char nmcli_ignore[256] = {0};
+//  sprintf(nmcli_ignore, "nmcli device disconnect %s > /dev/null 2>&1", dongle);
+//  system(nmcli_ignore);
+    
+//  sleep(2);
+
+//  memset(nmcli_ignore, 0, 256);
+//  sprintf(nmcli_ignore, "nmcli device set %1$s managed no", dongle);
+//  system(nmcli_ignore);
+
+//  sleep(2);
+    
+//  char wpa_kill[100] = {0};
+//  sprintf(wpa_kill, "wpa_cli -p /run/wpa_supplicant -i %s interface_remove > /dev/null 2>&1", dongle);
+//  system(wpa_kill);
+    
+//  sleep(2);
+
+//  char iwctl_kill[100] = {0};
+//  sprintf(iwctl_kill, "iwctl device %s disconnect > /dev/null 2>&1", dongle);
+//  system(iwctl_kill);
+    
+//  sleep(2);
+
+//  char iw_kill[100] = {0};
+//  sprintf(iw_kill, "iw dev %s disconnect", dongle);
+//  system(iw_kill);
+    
+//  sleep(2);
+  
+    
+    //messing with an already configured dongle is making hostapd not work.
+    //so lets just remove it and configure our own device, setting it up as an access point
+
+    //first, get the physical identifier of the wifi dongle
+    char phy[10] = {0};
+    char cmd[256] = {0};
+    //the awk command is like a more powerful cat. we can specifiy a pattern to print, in this case the second
+    //word of the input.
+    sprintf(cmd, "iw dev %s info | grep wiphy | awk '{print $2}'", dongle);
+    
+    //popen stands for "process open", it starts up a new process (executing param 1) and returns its file descriptor.
+    FILE* phy_contents = popen(cmd, "r");
+    if (phy_contents) {
+        fgets(phy, sizeof(phy), phy_contents);
+        pclose(phy_contents);
+    }
+
+    //if there is a newline, clear it up. strcspn returns the index where a substring first appears.
+    phy[strcspn(phy, "\n")] = 0;
+
+    if (strlen(phy) == 0) {
+        printf("0:Could not get physical identifier for %s\n", dongle);
+        if (dns_default && DNS) free(DNS);
+        return 1;
+    }
+
+
+    sprintf(cmd, "nmcli device disconnect %s > /dev/null 2>&1", dongle);
+    system(cmd);
+    
+    sleep(1);
+
+    sprintf(cmd, "nmcli device set %1$s managed no", dongle);
+    system(cmd);
+
+    sleep(1);
+
+    //remove the current dongle, and remake it as an access point
+    //const char* dongle_old = dongle;
+    const char* dongle_new = "ivnet0";
+
+    sprintf(cmd, "iw dev %s del > /dev/null 2>&1", dongle);
+    system(cmd);
+
+    sleep(1);
+
+    sprintf(cmd, "iw phy phy%s interface add %s type __ap", phy, dongle_new);
+    system(cmd);
+
+    sleep(1);
+
 
     //second, assign the ip address
-    char dongleIP_set[256] = {0};
-    sprintf(dongleIP_set, "ip link set dev %1$s down && ip addr add %2$u.%3$u.%4$u.%5$u/24 dev %1$s && ip link set dev %1$s up", dongle, dongle_ip[0], dongle_ip[1], dongle_ip[2], dongle_ip[3]);
-    status = system(dongleIP_set);
+    //char dongleIP_set[256] = {0};
+    //sprintf(dongleIP_set, "ip link set dev %s down", dongle);
+    //system(dongleIP_set);
+    
+    //sleep(2);
+
+
+
+    system("rfkill unblock wifi");
+    
+    sleep(2);
+
+    //memset(dongleIP_set, 0, 256);
+    sprintf(cmd, "ip addr add %2$u.%3$u.%4$u.%5$u/24 dev %1$s", dongle_new, dongle_ip[0], dongle_ip[1], dongle_ip[2], dongle_ip[3]);
+    
+    status = system(cmd);
     if (status == -1) {
         printf("0:could not set up %s with new ip address\n", dongle);
         if (dns_default && DNS) free(DNS);
@@ -321,14 +417,20 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+    
+    sleep(1);
 
     //third, write new config files
-    //write to a folder
-    status = mkdir("config", 0777);
+    //write to a folder in tmp, because backend is running as root.
+    //which starts in its own folder /root/
+    //tmp is cleared automatically after a while so yeah.
+    status = mkdir("/tmp/ivnet", 0777);
     
     //hostapd is a program that allows for a Network Interface Card to act like an Access Point, needed for the DS to connect to.
     const char* hostapd_contents = 
     "interface=%s\n" //dongle name
+    "country_code=GB\n"
+    "ieee80211d=1\n"
     "ssid=IVnet-Source\n"
     "hw_mode=g\n"
     "channel=6\n"
@@ -337,13 +439,25 @@ int main(int argc, char** argv) {
     //dnsmasq is a program that, for our purposes, will allow the dongle to hand out ip addresses to connected devices to be recognised for communication, such as the Nintendo DS.
     const char* dnsmasq_contents = 
     "interface=%1$s\n" //dongle name
+    "bind-interfaces\n"
     "dhcp-range=%2$u.%3$u.%4$u.10,%2$u.%3$u.%4$u.50,12h\n" //dongle access point range
     "dhcp-option=6,%5$s\n"; //DNS
 
-    FILE* hostapd = fopen("config/hostapd.conf", "w");
-    fprintf(hostapd, hostapd_contents, dongle);
-    FILE* dnsmasq = fopen("config/dnsmasq.conf", "w");
-    fprintf(dnsmasq, dnsmasq_contents, dongle, dongle_ip[0], dongle_ip[1], dongle_ip[2], DNS);
+    FILE* hostapd = fopen("/tmp/ivnet/hostapd.conf", "w");
+    if (!hostapd) {
+        printf("0:could not open hostapd.conf\n");
+        if (dns_default && DNS) free(DNS);
+        return 1;
+    }
+    fprintf(hostapd, hostapd_contents, dongle_new);
+    
+    FILE* dnsmasq = fopen("/tmp/ivnet/dnsmasq.conf", "w");
+    if (!dnsmasq) {
+        printf("0:could not open dnsmasq.conf\n");
+        if (dns_default && DNS) free(DNS);
+        return 1;
+    }
+    fprintf(dnsmasq, dnsmasq_contents, dongle_new, dongle_ip[0], dongle_ip[1], dongle_ip[2], DNS);
 
     fclose(hostapd);
     fclose(dnsmasq);
@@ -377,9 +491,30 @@ int main(int argc, char** argv) {
         return 1;
     }
     else if (hostapd_p == 0) { //child process
+        
+        //process death if backend death
+        prctl(PR_SET_PDEATHSIG, SIGKILL);
+
+        //redirect stdin to null to disconnect from frontend-backend communication
+        int null_fd = open("/dev/null", O_RDONLY);
+        if (null_fd != -1) {
+            dup2(null_fd, STDIN_FILENO);
+            close(null_fd);
+        }
+        
+        //set up a log
+        int log_fd = open("/tmp/ivnet/hostapd.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (log_fd != -1) {
+            //redirect stdout and stderr in the hostapd process to this file, so that we can read with cat
+            dup2(log_fd, STDOUT_FILENO);
+            dup2(log_fd, STDERR_FILENO);
+            close(log_fd);
+        }
+
         char* hostapd_args[] = {
             "hostapd",
-            "./config/hostapd.conf",
+            "-dd", //double debug
+            "/tmp/ivnet/hostapd.conf",
             NULL
         };
 
@@ -395,10 +530,14 @@ int main(int argc, char** argv) {
             return 1;
         }
         else if (dnsmasq_p == 0) { //child
+        
+            //process death if backend death
+            prctl(PR_SET_PDEATHSIG, SIGKILL);
+            
             char* dnsmasq_args[] = {
                 "dnsmasq",
                 "-C",
-                "./config/dnsmasq.conf",
+                "/tmp/ivnet/dnsmasq.conf",
                 "-d", //no daemon mode, for debugging purposes (yeah its just debug mode)
                 NULL
             };
@@ -411,10 +550,12 @@ int main(int argc, char** argv) {
     
     printf("1:Success!\n");
 
-    while (running) {
-        pause(); //do nothing while running
-    }
-    
+    //to do nothing, all we need to do is wait for closure of stdin, due to pipe redirection in frontend
+    //we will combine this with our standard signal so that backend can be run in terminal standalone.
+    char wait_buffer;
+    while (running && read(STDIN_FILENO, &wait_buffer, 1) > 0);
+
+    perror("Killing backend...\n"); 
     //kill children
     kill(hostapd_p, SIGKILL);
     kill(dnsmasq_p, SIGKILL);
@@ -429,13 +570,31 @@ int main(int argc, char** argv) {
     if (ip_forward) {
         fwrite("0", sizeof(char), 1, ip_forward);
         fclose(ip_forward);
+
     }
     
-    //restore nmcli control
-    char nmcli_restore[100] = {0};
-    sprintf(nmcli_restore, "nmcli device set %s managed yes", dongle);
-    system(nmcli_restore);
+    //restore things
+//    char ip_restore[100] = {0};
+//    sprintf(ip_restore, "ip link set dev %s down", dongle);
+//    system(ip_restore);
 
+//    char iw_restore[100] = {0};
+//    sprintf(iw_restore, "iw dev %s set type managed", dongle);
+//    system(iw_restore);
+
+//    char nmcli_restore[100] = {0};
+//    sprintf(nmcli_restore, "nmcli device set %s managed yes", dongle);
+//    system(nmcli_restore);
+
+
+    sprintf(cmd, "iw dev %s del > /dev/null 2>&1", dongle_new);
+    system(cmd);
+
+    sprintf(cmd, "iw phy phy%s interface add %s type managed", phy, dongle);
+    system(cmd);
+
+    sprintf(cmd, "nmcli device set %s managed yes > /dev/null 2>&1", dongle);
+    system(cmd);
 
     if (dns_default && DNS) free(DNS);
     

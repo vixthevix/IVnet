@@ -346,7 +346,13 @@ int main() {
     
     //IPC stuff
     pid_t back_p = 0;
+
+    //set up 2 pipes
+    //one is for backend to frontend communication, to ensure the AP has been set up
+    //the other acts like a signal from frontend to backend, to turn off the backend.
+    //we cant use actual signals because ivnet is not meant to run as root.
     int pipefd[2] = {0};
+    int signalfd[2] = {0};
    
     SetTraceLogLevel(LOG_NONE);
 
@@ -657,19 +663,23 @@ int main() {
 
                     //we now have a chosen dns and nic.
                     //fork and set up a child process.
-                    //set up the pipe
+                    //set up the pipes
 
                     pipe(pipefd);
+                    pipe(signalfd);
 
                     back_p = fork();
                     if (back_p == 0) { //child - backend
+                        
+                        //normal communication
                         close(pipefd[0]); //child does not read
-
-                        //because execvp will replace this code, we need a different form of communication
-                        //we can replace pipefd[1] with stdout using dup2
-
-                        dup2(pipefd[1], STDOUT_FILENO);
-                        close(pipefd[1]); //no longer using this pipe input
+                        dup2(pipefd[1], STDOUT_FILENO); //redirect output to stdout
+                        close(pipefd[1]); //no longer using this output
+                        
+                        //signal communication
+                        close(signalfd[1]); //child does not output signal
+                        dup2(signalfd[0], STDIN_FILENO); //redirect input to stdin
+                        close(signalfd[0]); //no longer using this input
 
                         char* backend_args[] = {
                             "pkexec", //run as root
@@ -688,6 +698,8 @@ int main() {
                     else { //parent - frontend
                         //parent doesnt write
                         close(pipefd[1]);
+                        //parent does not read signal
+                        close(signalfd[0]);
                         //set read to be non-blocking
                         int pipe_flags = fcntl(pipefd[0], F_GETFL, 0);
                         fcntl(pipefd[0], F_SETFL, pipe_flags | O_NONBLOCK);
@@ -710,7 +722,7 @@ int main() {
                     perror("Backend success!\n");
                     cur_scene = connection_menu;
                 }
-                else {
+                else if (buffer[0] == '0') {
                     perror("Backend returned an error.\n");
                     cur_scene = main_menu;
                 }
@@ -720,10 +732,13 @@ int main() {
         else if (cur_scene == connection_menu) {
             imageHoveringChange(connection_stop, "assets/img/connection_stop_pressed.png", "assets/img/connection_stop.png");
             if (imageHovering(connection_stop) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                //send the signal to stop
-                kill(back_p, SIGTERM);
+                //send the signal to stop using pipe
+                close(signalfd[1]);
+                //kill(back_p, SIGTERM);
+                printf("killed backend\n");
                 //wait for backend to finish cleaning up
                 waitpid(back_p, NULL, 0);
+                printf("waited for backend to finish\n");
                 //reset it
                 back_p = -1;
 
