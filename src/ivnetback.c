@@ -553,7 +553,21 @@ int main(int argc, char** argv) {
     //to do nothing, all we need to do is wait for closure of stdin, due to pipe redirection in frontend
     //we will combine this with our standard signal so that backend can be run in terminal standalone.
     char wait_buffer;
-    while (running && read(STDIN_FILENO, &wait_buffer, 1) > 0);
+    while (running && read(STDIN_FILENO, &wait_buffer, 1) > 0) {
+        //check if dnsmasq or hostapd have failed
+        if (kill(hostapd_p, 0) != 0) {
+            if (errno == ESRCH) {
+                //hostapd has died, end early
+                break;
+            }
+        }
+        if (kill(dnsmasq_p, 0) != 0) {
+            if (errno == ESRCH) {
+                //dnsmasq has died, end early
+                break;
+            }
+        }
+    }
 
     perror("Killing backend...\n"); 
     //kill children
@@ -598,5 +612,8 @@ int main(int argc, char** argv) {
 
     if (dns_default && DNS) free(DNS);
     
+    //we send out this message. if the frontend is listening, it will return to the main menu.
+    printf("0:backend has ended on its own terms.");
+
     return 0;
 }

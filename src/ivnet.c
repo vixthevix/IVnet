@@ -732,6 +732,7 @@ int main() {
         else if (cur_scene == connection_menu) {
             imageHoveringChange(connection_stop, "assets/img/connection_stop_pressed.png", "assets/img/connection_stop.png");
             if (imageHovering(connection_stop) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                connection_close:
                 //send the signal to stop using pipe
                 close(signalfd[1]);
                 //kill(back_p, SIGTERM);
@@ -744,10 +745,23 @@ int main() {
 
                 cur_scene = main_menu;
             }
+            
+            //read for any messages from the backend for early termination.
+            char buffer[256] = {0};
+            int bytes_read = read(pipefd[0], buffer, sizeof(buffer));
+            //the format is "status:message"
+            if (bytes_read > 0) {
+                //at this point, if we get any kind of message, its a bad sign.
+                if (buffer[0] == '0') {
+                    printf("backend ended things on its own terms.\n");
+                    goto connection_close;
+                }
+            }
         }
         else if (cur_scene == info_menu) {
             imageHoveringChange(info_return, "assets/img/return_pressed.png", "assets/img/return.png");
             if (imageHovering(info_return) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) cur_scene = main_menu;
+            
         }
 
 
