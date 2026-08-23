@@ -11,6 +11,7 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include <time.h>
+#include <errno.h>
 
 char* extractText(const char* path) {
     if (!path) return NULL;
@@ -342,10 +343,63 @@ bool freeScene(Scene* scene) {
     return true;
 }
 
+typedef struct Config {
+    char country_code[3];
+} Config;
 
-int main() {
-    
+Config generateConfig(const char* path) {
+    /*
+    In the format:
+        Country Code
+        END
+    */
+
+    Config config = {0};
+
+    if (!path) return config;
+    FILE* file = fopen(path, "r");
+    if (!file) {
+        //try creating it first
+        file = fopen(path, "w");
+        if (!file) return config;
+        fclose(file);
+        file = fopen(path, "r");
+        if (!file) return config;
+    }
+
+    //read line by line.
+    int line = 0;
+    char buffer[100] = {0};
+    while ((fgets(buffer, sizeof(buffer), file)) != NULL) {
+        if (buffer[strlen(buffer)] == '\n') buffer[strlen(buffer)] = 0; //remove newline
+        if (line == 0) { // Country Code
+            strcpy(config.country_code, buffer);
+        }
+        memset(buffer, 0, 100);
+        line++;
+    }
+    fclose(file);
+    return config;
+}
+
+bool saveConfig(Config config, const char* path) {
+    if (!path) return false;
+    FILE* file = fopen(path, "w");
+    if (!file) return false;
+
+    //build up a buffer and write it
+    fprintf(file, "%s", config.country_code);
+    fclose(file);
+
+    return true;
+}
+
+int main() { 
     const char* SSID = "IVnet";
+    const char* config_path = "IVnet.conf";
+    
+    Config config = generateConfig(config_path);
+
 
     //IPC stuff
     pid_t back_p = 0;
@@ -377,11 +431,13 @@ int main() {
     //Image info_pressed = LoadImage("assets/img/info_pressed.png");
     //ImageResize(&info_pressed, info->width, info->height);
    
-    Sprite* main_start = newSprite(IMAGE, "assets/img/start.png", 125, 150, IMAGE_SIZE_NATIVE, WHITE);
+    Sprite* main_start = newSprite(IMAGE, "assets/img/start.png", 150, 225, IMAGE_SIZE_NATIVE, WHITE);
+    Sprite* main_help = newSprite(IMAGE, "assets/img/help.png", 150, 325, IMAGE_SIZE_NATIVE, WHITE);
+    Sprite* main_config = newSprite(IMAGE, "assets/img/config.png", 150, 425, IMAGE_SIZE_NATIVE, WHITE);
     
     bool error_received = false;
     char error_message[512] = {0};
-    Sprite* main_error = newSprite(TEXT, " ", 50, 200, TEXT_SIZE(20), RED); 
+    Sprite* main_error = newSprite(TEXT, " ", 15, 200, TEXT_SIZE(20), RED); 
     //testing an animated gif
     //Sprite* teto_dance = newSprite(IMAGE, "teto_dance.gif", 0, 0, IMAGE_SIZE_NATIVE, WHITE);
     //Texture2D* teto_dance_data = (Texture2D*)teto_dance->data;
@@ -393,6 +449,8 @@ int main() {
     addScene(main_menu, logo);
     addScene(main_menu, info);
     addScene(main_menu, main_start);
+    addScene(main_menu, main_help);
+    addScene(main_menu, main_config);
     addScene(main_menu, main_error);
     //addScene(main_menu, teto_dance);
     
@@ -413,6 +471,50 @@ int main() {
     addScene(info_menu, info_text);
     addScene(info_menu, info_return);
     
+    Scene* instruction_menu = newScene();
+    
+    text = extractText("assets/text/instructions.txt");
+    Sprite* instruction_text = newSprite(TEXT, text, 10, 50, TEXT_SIZE(10), BLACK);
+    free(text);
+
+    Sprite* instruction_return = newSprite(IMAGE, "assets/img/return.png", 1, 1, 50, 50, WHITE);
+    
+    addScene(instruction_menu, instruction_text);
+    addScene(instruction_menu, instruction_return);
+
+    Scene* config_menu = newScene();
+    
+    Sprite* config_logo = newSprite(IMAGE, "assets/img/config_logo.png", 125, 0, IMAGE_SIZE_NATIVE, WHITE);
+    Sprite* config_return = newSprite(IMAGE, "assets/img/return.png", 1, 1, 50, 50, WHITE);
+    Sprite* config_info = newSprite(TEXT, " ", 250, 200, TEXT_SIZE(20), BLUE); 
+
+    //contains buttons for selecting which config to choose.
+    Sprite* config_country_select = newSprite(IMAGE, "assets/img/config_country_select.png", 75, 150, 150, 150, WHITE);
+
+
+
+    addScene(config_menu, config_logo);
+    addScene(config_menu, config_return);
+    addScene(config_menu, config_info);
+    addScene(config_menu, config_country_select);
+
+    Scene* country_select_menu = newScene();
+    
+    Sprite* country_select_instructions = newSprite(TEXT, "Type out your country code\n(All caps, only 2 letters)", 100, 100, TEXT_SIZE(20), BLUE);
+
+    Sprite* country_select_code = newSprite(TEXT, "", 200, 200, TEXT_SIZE(40), BLACK);
+
+    addScene(country_select_menu, country_select_instructions);
+    addScene(country_select_menu, country_select_code);
+    
+    char letter_buffer[10] = {0};
+    int letter_count = 0;
+    
+    //make a config struct to store info from ivnet.conf inside
+
+    //we need a way to get user input with raylib.
+    //
+
     //with the setup, we need to pick a NIC and a DNS, and then we can start connecting
     const uint32_t option_x = 100, option_y = 200, option_size = 20;
     const Color option_chosen = BLUE, option_not_chosen = BLACK;
@@ -493,6 +595,9 @@ int main() {
     Sprite* loading_display = newSprite(IMAGE, "assets/img/loading.png", 100, 100, IMAGE_SIZE_NATIVE, WHITE);
 
     addScene(loading_menu, loading_display);
+
+    const long loading_time_max = 30; //seconds
+    clock_t loading_time_old = 0, loading_time_new = 0;
     
     //the actual scene when we can finally link up the ds
     Scene* connection_menu = newScene();
@@ -521,12 +626,31 @@ int main() {
         if (cur_scene == main_menu) {
             imageHoveringChange(info, "assets/img/info_pressed.png", "assets/img/info.png");
             imageHoveringChange(main_start, "assets/img/start_pressed.png", "assets/img/start.png");
+            imageHoveringChange(main_help, "assets/img/help_pressed.png", "assets/img/help.png");
+            imageHoveringChange(main_config, "assets/img/config_pressed.png", "assets/img/config.png");
             
             if (imageHovering(info) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                 textUpdate(main_error, " ");
                 cur_scene = info_menu;
             }
+            else if (imageHovering(main_help) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                textUpdate(main_error, " ");
+                cur_scene = instruction_menu;
+            }
+            else if (imageHovering(main_config) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                textUpdate(main_error, " ");
+                //update the config info
+                char config_info_buffer[100] = {0};
+                sprintf(config_info_buffer, "CURRENT CONFIG:\n\nCOUNTRY CODE: %s", config.country_code);
+                textUpdate(config_info, config_info_buffer);
+                cur_scene = config_menu;
+            }
             else if (imageHovering(main_start) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {   
+                if (strlen(config.country_code) < 2) {
+                    textUpdate(main_error, "Error:Country code not configured properly");
+                    goto screen_display;
+                }
+
                 textUpdate(main_error, " ");
                 
                 nic_count = 0;
@@ -537,9 +661,9 @@ int main() {
                 struct dirent* dentry;
                 DIR* directory = opendir("/sys/class/net");
                 if (!directory) {
-                    printf("could not open /sys/class/net to verify\n");
+                    textUpdate(main_error, "Error: could not load NIC list");
                     cur_scene = main_menu;
-                    continue;
+                    goto screen_display;
                 }
                 while ((dentry = readdir(directory)) != NULL) {
                     if (strcmp(dentry->d_name, ".") == 0 || strcmp(dentry->d_name, "..") == 0) continue;
@@ -623,9 +747,9 @@ int main() {
                     struct dirent* dentry;
                     DIR* directory = opendir("/sys/class/net");
                     if (!directory) {
-                        printf("could not open /sys/class/net to verify\n");
+                        textUpdate(main_error, "Error: could not load NIC list");
                         cur_scene = main_menu;
-                        continue;
+                        goto screen_display;
                     }
                     while ((dentry = readdir(directory)) != NULL) {
                         if (strcmp(dentry->d_name, ".") == 0 || strcmp(dentry->d_name, "..") == 0) continue;
@@ -751,7 +875,7 @@ int main() {
                             "bin/ivnetback",
                             chosen_nic,
                             chosen_dns,
-                            "GB", //hardcoded for now
+                            config.country_code, //hardcoded for now
                             SSID,
                             NULL,
                         };
@@ -770,6 +894,9 @@ int main() {
                         //set read to be non-blocking
                         int pipe_flags = fcntl(pipefd[0], F_GETFL, 0);
                         fcntl(pipefd[0], F_SETFL, pipe_flags | O_NONBLOCK);
+                        
+                        //set up the loading
+                        loading_time_old = clock();
                     }
                     
 
@@ -781,6 +908,33 @@ int main() {
         else if (cur_scene == loading_menu) {
             //preferably, we want the pipe to be non-blocking, so that we can check and display at the same time.
             //do this once the dongle arrives
+            
+            //has loading taken too long?
+            loading_time_new = clock();
+            double loading_time_passed = ((double)(loading_time_new - loading_time_old))/CLOCKS_PER_SEC;
+            loading_time_passed *= 10;
+            printf("loading_time_passed: %lf\n", loading_time_passed);
+            if (loading_time_passed > loading_time_max) {
+                perror("Backend returned an error.\n");
+                sprintf(error_message, "Error:backend took too long");
+                textUpdate(main_error, error_message);
+                cur_scene = main_menu;
+                kill(back_p, SIGKILL); //just kill the backend
+                waitpid(back_p, NULL, 0);
+                goto screen_display;
+            }
+
+            //also, check the status of the child process
+            if (kill(back_p, 0) != 0) {
+                if (errno == ESRCH) {
+                    perror("Backend returned an error.\n");
+                    sprintf(error_message, "Error:backend terminated unexpectedly");
+                    textUpdate(main_error, error_message);
+                    cur_scene = main_menu;
+                    goto screen_display;
+                }
+            }
+
             char buffer[256] = {0};
             int bytes_read = read(pipefd[0], buffer, sizeof(buffer));
             //the format is "status:message"
@@ -858,10 +1012,56 @@ int main() {
         else if (cur_scene == info_menu) {
             imageHoveringChange(info_return, "assets/img/return_pressed.png", "assets/img/return.png");
             if (imageHovering(info_return) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) cur_scene = main_menu;
+        }
+        else if (cur_scene == instruction_menu) {
+            imageHoveringChange(instruction_return, "assets/img/return_pressed.png", "assets/img/return.png");
+            if (imageHovering(instruction_return) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) cur_scene = main_menu;
+        }
+        else if (cur_scene == config_menu) {
+            memset(letter_buffer, 0, 10);
+            letter_count = 0;
+            textUpdate(country_select_code, letter_buffer);
+
+            imageHoveringChange(config_return, "assets/img/return_pressed.png", "assets/img/return.png");
+            imageHoveringChange(config_country_select, "assets/img/config_country_select_pressed.png", "assets/img/config_country_select.png");
+            if (imageHovering(config_return) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) cur_scene = main_menu;
+            if (imageHovering(config_country_select) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) cur_scene = country_select_menu; 
+        }
+        //config settings
+        else if (cur_scene == country_select_menu) {
+            //read keys, update the country code as reading, limit to two characters
+            //ensure only letters are read, and auto convert to caps
+            //ensure backspace works. ensure enter saves the config.
             
+            int key = GetKeyPressed();
+            if ('A' <= key && key <= 'Z' && letter_count < 2) { //uppercase
+                letter_buffer[letter_count++] = key;
+                textUpdate(country_select_code, letter_buffer);
+            }
+            else if ('a' <= key && key <= 'z' && letter_count < 2) { //lowercase
+                key -= 32; //convert to uppercase
+                letter_buffer[letter_count++] = key;
+                textUpdate(country_select_code, letter_buffer);
+            }
+            
+            if (IsKeyPressed(KEY_BACKSPACE)) { //backspace
+                if (letter_count > 0) letter_count--;
+                letter_buffer[letter_count] = 0;
+                textUpdate(country_select_code, letter_buffer);
+            }
+            else if (IsKeyPressed(KEY_ENTER)) { //carriage return
+                if (letter_count == 2) { //only if we have a complete country code
+                    strcpy(config.country_code, letter_buffer);
+                    saveConfig(config, config_path);
+                    char config_info_buffer[100] = {0};
+                    sprintf(config_info_buffer, "CURRENT CONFIG:\n\nCOUNTRY CODE: %s", config.country_code);
+                    textUpdate(config_info, config_info_buffer);
+                    cur_scene = config_menu;
+                }
+            }
         }
 
-
+        screen_display:
         BeginDrawing();
         ClearBackground(WHITE);
         displayScene(cur_scene);

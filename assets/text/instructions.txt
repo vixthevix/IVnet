@@ -1,0 +1,32 @@
+Before you begin, ensure you have:
+    an available Network Interface Device (NID) that is not your main WiFi device, 
+    such as a WiFi dongle.
+    configured your country code in the config menu.
+    (look for your code at wikipedia.org/wiki/ISO_3166-1_alpha-2)
+
+1) On the main menu, click "START".
+
+2) Select your NID 
+   (if using a dongle, refresh while unplugged and while plugged to recognize it).
+
+3) Select the DNS server you wish to connect to.
+
+4) Wait for the device to be set up, and if no errors occur, you are good to go!
+
+5) On your Pokemon D/P/Pt/HG/SS game, go to your Nintendo WFC settings.
+
+6) Go to Nintendo Wi-Fi Connection Settings -> 
+   Connection 1/2/3 (whichever is available) -> Search for an Access Point -> 
+   IVnet -> wait for the connection to be set up.
+
+7) Once connected, click on Ready on the chosen Connection, scroll down, 
+   turn off Auto-obtain DNS, and ensure the Primary DNS is set to your chosen DNS server, 
+   and Secondary DNS is all 0 or matching.
+
+8) Save Settings, then test the connection. If all good, 
+   you now have access to Gen IV Internet features!
+
+These features depend on the DNS server you are connected to.
+For instance, the Poke Classic Network offers 
+Mystery Gifts via Nintendo WFC, the GTS, and more.
+Make sure you know what your chosen DNS offers as to not get confused!
