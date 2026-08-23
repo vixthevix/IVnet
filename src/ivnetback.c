@@ -443,10 +443,11 @@ int main(int argc, char** argv) {
     "auth_algs=1";
     
     //dnsmasq is a program that, for our purposes, will allow the dongle to hand out ip addresses to connected devices to be recognised for communication, such as the Nintendo DS.
+    //to be running for 3 hours only.
     const char* dnsmasq_contents = 
     "interface=%1$s\n" //dongle name
     "bind-interfaces\n"
-    "dhcp-range=%2$u.%3$u.%4$u.10,%2$u.%3$u.%4$u.50,12h\n" //dongle access point range
+    "dhcp-range=%2$u.%3$u.%4$u.10,%2$u.%3$u.%4$u.50,3h\n" //dongle access point range
     "dhcp-option=6,%5$s\n"; //DNS
 
     FILE* hostapd = fopen("/tmp/ivnet/hostapd.conf", "w");

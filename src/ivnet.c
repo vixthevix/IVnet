@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/wait.h>
+#include <time.h>
 
 char* extractText(const char* path) {
     if (!path) return NULL;
@@ -502,11 +503,18 @@ int main() {
     Sprite* connection_stop = newSprite(IMAGE, "assets/img/connection_stop.png", 125, 275, IMAGE_SIZE_NATIVE, WHITE);
 
     Sprite* connection_info = newSprite(TEXT, " ", 50, 200, TEXT_SIZE(20), BLUE);
+    
+    //add a timer
+    const long connection_time_start = 3 * 60 * 60; //3 hours
+    long connection_time_left = connection_time_start;
+    clock_t connection_time_old = 0, connection_time_new = 0;
+    Sprite* connection_time = newSprite(TEXT, " ", 50, 300, TEXT_SIZE(20), RED);
 
     addScene(connection_menu, connection_logo);
     addScene(connection_menu, connection_stop);
     addScene(connection_menu, connection_info);
-    
+    addScene(connection_menu, connection_time);    
+
     cur_scene = main_menu;
     
     while (!WindowShouldClose()) {
@@ -783,6 +791,7 @@ int main() {
                     char connection_info_string[512] = {0};
                     sprintf(connection_info_string, "You can now connect your DS!\nPrimary DNS:%s\nSSID:%s", chosen_dns, SSID);
                     textUpdate(connection_info, connection_info_string);
+                    connection_time_old = clock();
                     cur_scene = connection_menu;
                 }
                 else if (buffer[0] == '0') {
@@ -796,6 +805,26 @@ int main() {
 
         }
         else if (cur_scene == connection_menu) {
+            //update the timer
+            char connection_time_buffer[512] = {0};
+            sprintf(connection_time_buffer, "Time left: %li", connection_time_left);
+            textUpdate(connection_time, connection_time_buffer);
+
+            connection_time_new = clock();
+            double connection_time_taken = ((double)(connection_time_new - connection_time_old))/CLOCKS_PER_SEC;
+            
+            //printf("connection_time_new: %u\n", connection_time_new);
+            //printf("connection_time_old: %u\n", connection_time_old);
+            //printf("connection_time_taken: %lf\n", 10 * connection_time_taken);
+            
+            connection_time_left = connection_time_start - (long)(10* connection_time_taken);
+            if (connection_time_left <= 0) {
+                //stop everything
+                sprintf(error_message, "Error:IVnet connection out of time");
+                textUpdate(main_error, error_message);
+                goto connection_close;
+            }
+
             imageHoveringChange(connection_stop, "assets/img/connection_stop_pressed.png", "assets/img/connection_stop.png");
             if (imageHovering(connection_stop) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                 connection_close:
@@ -820,6 +849,8 @@ int main() {
                 //at this point, if we get any kind of message, its a bad sign.
                 if (buffer[0] == '0') {
                     printf("backend ended things on its own terms.\n");
+                    sprintf(error_message, "Error:%s", &buffer[2]);
+                    textUpdate(main_error, error_message);
                     goto connection_close;
                 }
             }
