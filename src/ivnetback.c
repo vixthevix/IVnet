@@ -24,6 +24,7 @@ For development, follow Vanilla by MattKC for Linux-to-WiFidongle support to upd
 #include <sys/wait.h>
 #include <sys/prctl.h>
 #include <fcntl.h>
+#include <errno.h>
 
 //signal functionality
 
@@ -97,33 +98,32 @@ int main(int argc, char** argv) {
         printf("0:Must run as root\n");
         return 1;
     }
+    
 
-    if (argc < 3) {
-        printf("0:Sorry, IVnet requires 2 arguments: the name of the WiFi dongle and the DNS to connect to (0 for default).\n");
+    //arguments consist of NIC, DNS, country code (for hostapd), and optional SSID.
+    const int 
+    arg_max = 4 + 1;
+
+    if (argc < arg_max) {
+        printf("0:Not enough parameters\n");
+        perror("IVnet requires:\nname of NIC,\nDNS to connect to,\nISO 3166-1 alpha-2 country code,\nSSID to assign\n");
         return 1;
     }
 
 
 
     char* dongle = argv[1];
-    //char* dongleIP = argv[2];
     char* DNS = argv[2];
+    char* country_code = argv[3];
+    char* SSID = argv[4];
+    
     int status = 0;
-    
-    bool dns_default = false;
-    if (strcmp(DNS, "0") == 0) {
-        perror("Using default DNS...\n");
-        DNS = (char*)calloc(strlen("178.62.43.212") + 1, 1);
-        strcpy(DNS, "178.62.43.212");
-        dns_default = true;
-    }
-    
+
     //verify dongle
     struct dirent* dentry;
     DIR* directory = opendir("/sys/class/net");
     if (!directory) {
         printf("0:could not open /sys/class/net to verify %s.\n", dongle);
-        if (dns_default && DNS) free(DNS);
         return 1;
     }
     bool dongle_valid = false;
@@ -136,14 +136,12 @@ int main(int argc, char** argv) {
     closedir(directory);
     if (!dongle_valid) {
         printf("0:%s is not a valid NIC.\n", dongle);
-        if (dns_default && DNS) free(DNS);
         return 1;
     }
 
     //verify DNS
     if (!DNS) {
         printf("0:DNS invalid\n");
-        if (dns_default && DNS) free(DNS);
         return 1;
     }
     char dns_valid_buffer[10] = {0};
@@ -155,7 +153,6 @@ int main(int argc, char** argv) {
             int num = atoi(dns_valid_buffer);
             if (num < 0 || num > 255) {
                 printf("0:DNS invalid\n");
-                if (dns_default && DNS) free(DNS);
                 return 1;
             }
             memset(dns_valid_buffer, 0, dns_valid_index);
@@ -167,7 +164,6 @@ int main(int argc, char** argv) {
             int num = atoi(dns_valid_buffer);
             if (num < 0 || num > 255) {
                 printf("0:DNS invalid\n");
-                if (dns_default && DNS) free(DNS);
                 return 1;
             }
         }
@@ -175,17 +171,29 @@ int main(int argc, char** argv) {
     
     if (dns_dot_count != 3) {
         printf("0:DNS invalid\n");
-        if (dns_default && DNS) free(DNS);
         return 1;
     }
-
+    
+    //verify countrycode
+    //must be 2 characters long, and be in all caps
+    if (!country_code) {
+        printf("0:Country code invalid\n");
+        return 1;
+    }
+    if (strlen(country_code) != 2) {
+        printf("0:Country code invalid, must be 2 characters long and in all caps\n");
+        return 1;
+    }
+    if ((country_code[0] < 'A' || country_code[0] > 'Z') || (country_code[1] < 'A' || country_code[1] > 'Z')) {
+        printf("0:Country code invalid, must be 2 characters long and in all caps\n");
+        return 1;
+    }
 
     //actually, ignore providing an ip address, we can find one ourselves.
     struct ifaddrs* ifa_head = NULL;
     status = getifaddrs(&ifa_head);
     if (status != 0 || !ifa_head) {
         printf("0:Could not retreive list of IP addresses for binding with %s\n", dongle);
-        if (dns_default && DNS) free(DNS);
         return 1;
     }
     struct ifaddrs* cur_address = ifa_head;
@@ -295,7 +303,6 @@ int main(int argc, char** argv) {
 
     if (!ipValid) {
         printf("0:ip collision, error\n");
-        if (dns_default && DNS) free(DNS);
         return 1;
     }
     
@@ -336,6 +343,9 @@ int main(int argc, char** argv) {
     
     //messing with an already configured dongle is making hostapd not work.
     //so lets just remove it and configure our own device, setting it up as an access point
+    
+    //set up constants;
+    const char* dongle_new = "ivnet0";
 
     //first, get the physical identifier of the wifi dongle
     char phy[10] = {0};
@@ -356,7 +366,6 @@ int main(int argc, char** argv) {
 
     if (strlen(phy) == 0) {
         printf("0:Could not get physical identifier for %s\n", dongle);
-        if (dns_default && DNS) free(DNS);
         return 1;
     }
 
@@ -373,7 +382,6 @@ int main(int argc, char** argv) {
 
     //remove the current dongle, and remake it as an access point
     //const char* dongle_old = dongle;
-    const char* dongle_new = "ivnet0";
 
     sprintf(cmd, "iw dev %s del > /dev/null 2>&1", dongle);
     system(cmd);
@@ -405,7 +413,6 @@ int main(int argc, char** argv) {
     status = system(cmd);
     if (status == -1) {
         printf("0:could not set up %s with new ip address\n", dongle);
-        if (dns_default && DNS) free(DNS);
         return 1;
     }
     else {
@@ -413,7 +420,6 @@ int main(int argc, char** argv) {
         //do something here
         if (exit_status != 0) {
             printf("0:could not set up %s with new ip address\n", dongle);
-            if (dns_default && DNS) free(DNS);
             return 1;
         }
     }
@@ -429,9 +435,9 @@ int main(int argc, char** argv) {
     //hostapd is a program that allows for a Network Interface Card to act like an Access Point, needed for the DS to connect to.
     const char* hostapd_contents = 
     "interface=%s\n" //dongle name
-    "country_code=GB\n"
+    "country_code=%s\n"
     "ieee80211d=1\n"
-    "ssid=IVnet-Source\n"
+    "ssid=%s\n"
     "hw_mode=g\n"
     "channel=6\n"
     "auth_algs=1";
@@ -449,7 +455,7 @@ int main(int argc, char** argv) {
         if (dns_default && DNS) free(DNS);
         return 1;
     }
-    fprintf(hostapd, hostapd_contents, dongle_new);
+    fprintf(hostapd, hostapd_contents, dongle_new, country_code, SSID);
     
     FILE* dnsmasq = fopen("/tmp/ivnet/dnsmasq.conf", "w");
     if (!dnsmasq) {
@@ -467,7 +473,6 @@ int main(int argc, char** argv) {
     FILE* ip_forward = fopen("/proc/sys/net/ipv4/ip_forward", "w");
     if (!ip_forward) {
         printf("0:could not open ip_forward file.\n");
-        if (dns_default && DNS) free(DNS);
         return 1;
     }
     fwrite("1", sizeof(char), 1, ip_forward);
@@ -487,7 +492,6 @@ int main(int argc, char** argv) {
     hostapd_p = fork();
     if (hostapd_p < 0) {
         printf("0:could not fork into hostapd\n");
-        if (dns_default && DNS) free(DNS);
         return 1;
     }
     else if (hostapd_p == 0) { //child process
@@ -526,7 +530,6 @@ int main(int argc, char** argv) {
         dnsmasq_p = fork();
         if (dnsmasq_p < 0) {
             printf("0:could not fork into dnsmasq\n");
-            if (dns_default && DNS) free(DNS);
             return 1;
         }
         else if (dnsmasq_p == 0) { //child
@@ -555,15 +558,16 @@ int main(int argc, char** argv) {
     char wait_buffer;
     while (running && read(STDIN_FILENO, &wait_buffer, 1) > 0) {
         //check if dnsmasq or hostapd have failed
+        //kill command can check status of process when signal is 0
         if (kill(hostapd_p, 0) != 0) {
             if (errno == ESRCH) {
-                //hostapd has died, end early
+                printf("0:hostapd terminated early\n");
                 break;
             }
         }
         if (kill(dnsmasq_p, 0) != 0) {
             if (errno == ESRCH) {
-                //dnsmasq has died, end early
+                printf("0:dnsmasq terminated early\n");
                 break;
             }
         }
@@ -610,10 +614,9 @@ int main(int argc, char** argv) {
     sprintf(cmd, "nmcli device set %s managed yes > /dev/null 2>&1", dongle);
     system(cmd);
 
-    if (dns_default && DNS) free(DNS);
     
     //we send out this message. if the frontend is listening, it will return to the main menu.
-    printf("0:backend has ended on its own terms.");
+    //printf("0:backend has ended on its own terms.");
 
     return 0;
 }
