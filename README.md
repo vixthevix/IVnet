@@ -5,5 +5,6 @@ Work on frontend mainly now:
     - fix up connection screen (display SSID and Primary DNS to insert)
     - display error message on main menu upon connection issue. display until menu changes.
     - add settings menu to configure country code. ensure mandatory to configure before starting any connection.
+    - add refresh button to nic menu
 
 last thing to do is clean up backend and frontend and add comments.

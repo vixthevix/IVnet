@@ -452,7 +452,6 @@ int main(int argc, char** argv) {
     FILE* hostapd = fopen("/tmp/ivnet/hostapd.conf", "w");
     if (!hostapd) {
         printf("0:could not open hostapd.conf\n");
-        if (dns_default && DNS) free(DNS);
         return 1;
     }
     fprintf(hostapd, hostapd_contents, dongle_new, country_code, SSID);
@@ -460,7 +459,6 @@ int main(int argc, char** argv) {
     FILE* dnsmasq = fopen("/tmp/ivnet/dnsmasq.conf", "w");
     if (!dnsmasq) {
         printf("0:could not open dnsmasq.conf\n");
-        if (dns_default && DNS) free(DNS);
         return 1;
     }
     fprintf(dnsmasq, dnsmasq_contents, dongle_new, dongle_ip[0], dongle_ip[1], dongle_ip[2], DNS);

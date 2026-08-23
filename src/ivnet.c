@@ -344,6 +344,8 @@ bool freeScene(Scene* scene) {
 
 int main() {
     
+    const char* SSID = "IVnet";
+
     //IPC stuff
     pid_t back_p = 0;
 
@@ -375,7 +377,10 @@ int main() {
     //ImageResize(&info_pressed, info->width, info->height);
    
     Sprite* main_start = newSprite(IMAGE, "assets/img/start.png", 125, 150, IMAGE_SIZE_NATIVE, WHITE);
-
+    
+    bool error_received = false;
+    char error_message[512] = {0};
+    Sprite* main_error = newSprite(TEXT, " ", 50, 200, TEXT_SIZE(20), RED); 
     //testing an animated gif
     //Sprite* teto_dance = newSprite(IMAGE, "teto_dance.gif", 0, 0, IMAGE_SIZE_NATIVE, WHITE);
     //Texture2D* teto_dance_data = (Texture2D*)teto_dance->data;
@@ -387,6 +392,7 @@ int main() {
     addScene(main_menu, logo);
     addScene(main_menu, info);
     addScene(main_menu, main_start);
+    addScene(main_menu, main_error);
     //addScene(main_menu, teto_dance);
     
     
@@ -433,6 +439,8 @@ int main() {
     Sprite* nic_forward = newSprite(IMAGE, "assets/img/forward.png", forward_x, forward_y, arrow_w, arrow_h, WHITE);
     Sprite* nic_backward = newSprite(IMAGE, "assets/img/backward.png", backward_x, backward_y, arrow_w, arrow_h, WHITE);
     
+    Sprite* nic_reload = newSprite(IMAGE, "assets/img/reload.png", 400, 75, 75, 75, WHITE);
+    
     addScene(nic_menu, nic_logo);
     addScene(nic_menu, nic_1);
     addScene(nic_menu, nic_2);
@@ -440,6 +448,7 @@ int main() {
     addScene(nic_menu, nic_return);
     addScene(nic_menu, nic_forward);
     addScene(nic_menu, nic_backward);
+    addScene(nic_menu, nic_reload);
 
     Scene* dns_menu = newScene();
 
@@ -490,20 +499,27 @@ int main() {
     Sprite* connection_logo = newSprite(IMAGE, "assets/img/success.png", 125, -25, IMAGE_SIZE_NATIVE, WHITE);
 
     //add a back button
-    Sprite* connection_stop = newSprite(IMAGE, "assets/img/connection_stop.png", 125, 350, IMAGE_SIZE_NATIVE, WHITE);
+    Sprite* connection_stop = newSprite(IMAGE, "assets/img/connection_stop.png", 125, 275, IMAGE_SIZE_NATIVE, WHITE);
+
+    Sprite* connection_info = newSprite(TEXT, " ", 50, 200, TEXT_SIZE(20), BLUE);
 
     addScene(connection_menu, connection_logo);
     addScene(connection_menu, connection_stop);
+    addScene(connection_menu, connection_info);
     
     cur_scene = main_menu;
     
     while (!WindowShouldClose()) {
         if (cur_scene == main_menu) {
             imageHoveringChange(info, "assets/img/info_pressed.png", "assets/img/info.png");
-            if (imageHovering(info) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) cur_scene = info_menu;
-            
             imageHoveringChange(main_start, "assets/img/start_pressed.png", "assets/img/start.png");
-            if (imageHovering(main_start) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            
+            if (imageHovering(info) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                textUpdate(main_error, " ");
+                cur_scene = info_menu;
+            }
+            else if (imageHovering(main_start) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {   
+                textUpdate(main_error, " ");
                 
                 nic_count = 0;
                 for (int i = 0; i < nic_count; i++) {
@@ -514,7 +530,7 @@ int main() {
                 DIR* directory = opendir("/sys/class/net");
                 if (!directory) {
                     printf("could not open /sys/class/net to verify\n");
-                    cur_scene = info_menu;
+                    cur_scene = main_menu;
                     continue;
                 }
                 while ((dentry = readdir(directory)) != NULL) {
@@ -538,6 +554,10 @@ int main() {
                     textUpdate(nic_2, nic_list[i_2]);
                     textUpdate(nic_3, nic_list[i_3]);
                 }
+                else {
+                    cur_scene = main_menu;
+                    continue;
+                }
 
 
                 cur_scene = nic_menu; //nic_menu
@@ -554,6 +574,7 @@ int main() {
             imageHoveringChange(nic_return, "assets/img/return_pressed.png", "assets/img/return.png");
             imageHoveringChange(nic_forward, "assets/img/forward_pressed.png", "assets/img/forward.png");
             imageHoveringChange(nic_backward, "assets/img/backward_pressed.png", "assets/img/backward.png");
+            imageHoveringChange(nic_reload, "assets/img/reload_pressed.png", "assets/img/reload.png");
             if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                 char* choice = NULL;
                 if (textHovering(nic_1)) {
@@ -583,6 +604,42 @@ int main() {
                     textUpdate(nic_1, nic_list[(nic_index + 0) % nic_count]);
                     textUpdate(nic_2, nic_list[(nic_index + 1) % nic_count]);
                     textUpdate(nic_3, nic_list[(nic_index + 2) % nic_count]);
+                }
+                else if (imageHovering(nic_reload)) {
+                    nic_index = 0;
+                    nic_count = 0;
+                    for (int i = 0; i < nic_count; i++) {
+                        memset(nic_list[i], 0, strlen(nic_list[i]));
+                    }
+                    
+                    struct dirent* dentry;
+                    DIR* directory = opendir("/sys/class/net");
+                    if (!directory) {
+                        printf("could not open /sys/class/net to verify\n");
+                        cur_scene = main_menu;
+                        continue;
+                    }
+                    while ((dentry = readdir(directory)) != NULL) {
+                        if (strcmp(dentry->d_name, ".") == 0 || strcmp(dentry->d_name, "..") == 0) continue;
+                        strcpy(nic_list[nic_count++], dentry->d_name);
+                    }
+                    closedir(directory);
+                    
+                    printf("found all nics:\n");
+                    for (uint32_t i = 0; i < nic_count; i++) {
+                        printf("%s\n", nic_list[i]);
+                    }
+                    
+                    if (nic_count > 0) {
+                        //get the first 3
+                        uint8_t i_1 = 0 % nic_count;
+                        uint8_t i_2 = 1 % nic_count;
+                        uint8_t i_3 = 2 % nic_count;
+
+                        textUpdate(nic_1, nic_list[i_1]);
+                        textUpdate(nic_2, nic_list[i_2]);
+                        textUpdate(nic_3, nic_list[i_3]);
+                    }
                 }
 
                 if (choice != NULL) {
@@ -686,6 +743,8 @@ int main() {
                             "bin/ivnetback",
                             chosen_nic,
                             chosen_dns,
+                            "GB", //hardcoded for now
+                            SSID,
                             NULL,
                         };
                         execvp("pkexec", backend_args);
@@ -720,11 +779,18 @@ int main() {
             if (bytes_read > 0) {
                 if (buffer[0] == '1') {
                     perror("Backend success!\n");
+                    //updated connection info
+                    char connection_info_string[512] = {0};
+                    sprintf(connection_info_string, "You can now connect your DS!\nPrimary DNS:%s\nSSID:%s", chosen_dns, SSID);
+                    textUpdate(connection_info, connection_info_string);
                     cur_scene = connection_menu;
                 }
                 else if (buffer[0] == '0') {
                     perror("Backend returned an error.\n");
+                    sprintf(error_message, "Error:%s", &buffer[2]);
+                    textUpdate(main_error, error_message);
                     cur_scene = main_menu;
+                    
                 }
             }
 
