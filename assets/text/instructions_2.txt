@@ -1,0 +1,7 @@
+These features depend on the DNS server 
+you are connected to.
+e.g. the Poke Classic Network offers 
+Mystery Gifts via Nintendo WFC, 
+the GTS, and more.
+Make sure you know what your 
+chosen DNS offers as to not get confused!

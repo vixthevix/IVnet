@@ -1,0 +1,18 @@
+5) On your Pokemon D/P/Pt/HG/SS game, 
+   go to your Nintendo WFC settings.
+
+6) Go to Nintendo Wi-Fi Connection Settings-> 
+   Connection 1/2/3 (whichever is available)-> 
+   Search for an Access Point-> 
+   IVnet->wait for the connection to set up.
+
+7) Once connected, click on Ready on 
+   the chosen Connection, scroll down, 
+   turn off Auto-obtain DNS, 
+   and ensure the Primary DNS is set 
+   to your chosen DNS server, 
+   and Secondary DNS is all 0 or matching.
+
+8) Save Settings, then test the connection. 
+   If all good, you now have access to 
+   Gen IV Internet features!

@@ -10,8 +10,10 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/wait.h>
-#include <time.h>
 #include <errno.h>
+
+//set a global font variable because im lazy
+Font font;
 
 char* extractText(const char* path) {
     if (!path) return NULL;
@@ -171,7 +173,8 @@ bool displaySprite(Sprite* sprite) {
         case TEXT: {
             char** data = (char**)sprite->data;
             if (!(*data)) return false;
-            DrawText(*data, sprite->x, sprite->y, sprite->width, sprite->colour);
+            //DrawText(*data, sprite->x, sprite->y, sprite->width, sprite->colour);
+            DrawTextEx(font, *data, (Vector2){sprite->x, sprite->y}, sprite->width, 2, sprite->colour);
             break;
         }
         default: return false;
@@ -343,6 +346,28 @@ bool freeScene(Scene* scene) {
     return true;
 }
 
+//nic retrieval
+bool updateNIC(char nic_list[256][75], uint32_t* nic_count) {
+    //reset
+    uint32_t count = 0;
+    for (int i = 0; i < *nic_count; i++) {
+        memset(nic_list[i], 0, strlen(nic_list[i]));
+    }
+
+    struct dirent* dentry;
+    DIR* directory = opendir("/sys/class/net");
+    if (!directory) return false;
+    while ((dentry = readdir(directory)) != NULL) {
+        if (strcmp(dentry->d_name, ".") == 0 || strcmp(dentry->d_name, "..") == 0) continue;
+        strcpy(nic_list[count++], dentry->d_name);
+    }
+    closedir(directory);
+
+    *nic_count = count;
+
+    return true;
+}
+
 typedef struct Config {
     char country_code[3];
 } Config;
@@ -396,8 +421,7 @@ bool saveConfig(Config config, const char* path) {
 
 int main() { 
     const char* SSID = "IVnet";
-    const char* config_path = "IVnet.conf";
-    
+    const char* config_path = "IVnet.conf";    
     Config config = generateConfig(config_path);
 
 
@@ -418,6 +442,10 @@ int main() {
     height = 500;
     InitWindow(width, height, "IVnet");
     SetTargetFPS(60);
+    font = LoadFontEx("assets/font/EightBitDragon-anqx.ttf", 100, 0, 250);
+    if (font.texture.id == 0) {
+        printf("Could not load custom font, resorting to default...\n");
+    }
 
     Scene* cur_scene = NULL;
     
@@ -437,7 +465,7 @@ int main() {
     
     bool error_received = false;
     char error_message[512] = {0};
-    Sprite* main_error = newSprite(TEXT, " ", 15, 200, TEXT_SIZE(20), RED); 
+    Sprite* main_error = newSprite(TEXT, " ", 15, 200, TEXT_SIZE(12), RED); 
     //testing an animated gif
     //Sprite* teto_dance = newSprite(IMAGE, "teto_dance.gif", 0, 0, IMAGE_SIZE_NATIVE, WHITE);
     //Texture2D* teto_dance_data = (Texture2D*)teto_dance->data;
@@ -459,7 +487,7 @@ int main() {
 
     char* text = extractText("assets/text/info.txt");
     printf("TEXT IS %s\n", text);
-    Sprite* info_text = newSprite(TEXT, text, 15, 150, TEXT_SIZE(20), BLACK);
+    Sprite* info_text = newSprite(TEXT, text, 15, 150, TEXT_SIZE(15), BLACK);
     free(text);
 
     Sprite* info_return = newSprite(IMAGE, "assets/img/return.png", 1, 1, 50, 50, WHITE);
@@ -472,21 +500,29 @@ int main() {
     addScene(info_menu, info_return);
     
     Scene* instruction_menu = newScene();
-    
-    text = extractText("assets/text/instructions.txt");
-    Sprite* instruction_text = newSprite(TEXT, text, 10, 50, TEXT_SIZE(10), BLACK);
-    free(text);
 
+    char* instructions[] = {
+        extractText("assets/text/instructions_0.txt"),
+        extractText("assets/text/instructions_1.txt"),
+        extractText("assets/text/instructions_2.txt"),
+    };
+    const uint16_t instruction_max = sizeof(instructions)/sizeof(instructions[0]);
+    uint16_t instruction_index = 0;
+    
+    Sprite* instruction_text = newSprite(TEXT, " ", 10, 50, TEXT_SIZE(15), BLACK);
+
+    Sprite* instruction_forward = newSprite(IMAGE, "assets/img/forward.png", 400, 400, 100, 100, WHITE);
     Sprite* instruction_return = newSprite(IMAGE, "assets/img/return.png", 1, 1, 50, 50, WHITE);
     
     addScene(instruction_menu, instruction_text);
+    addScene(instruction_menu, instruction_forward);
     addScene(instruction_menu, instruction_return);
 
     Scene* config_menu = newScene();
     
     Sprite* config_logo = newSprite(IMAGE, "assets/img/config_logo.png", 125, 0, IMAGE_SIZE_NATIVE, WHITE);
     Sprite* config_return = newSprite(IMAGE, "assets/img/return.png", 1, 1, 50, 50, WHITE);
-    Sprite* config_info = newSprite(TEXT, " ", 250, 200, TEXT_SIZE(20), BLUE); 
+    Sprite* config_info = newSprite(TEXT, " ", 250, 200, TEXT_SIZE(20), BLACK); 
 
     //contains buttons for selecting which config to choose.
     Sprite* config_country_select = newSprite(IMAGE, "assets/img/config_country_select.png", 75, 150, 150, 150, WHITE);
@@ -500,7 +536,7 @@ int main() {
 
     Scene* country_select_menu = newScene();
     
-    Sprite* country_select_instructions = newSprite(TEXT, "Type out your country code\n(All caps, only 2 letters)", 100, 100, TEXT_SIZE(20), BLUE);
+    Sprite* country_select_instructions = newSprite(TEXT, "Type out your country code\n(All caps, only 2 letters)", 75, 100, TEXT_SIZE(20), BLACK);
 
     Sprite* country_select_code = newSprite(TEXT, "", 200, 200, TEXT_SIZE(40), BLACK);
 
@@ -516,7 +552,7 @@ int main() {
     //
 
     //with the setup, we need to pick a NIC and a DNS, and then we can start connecting
-    const uint32_t option_x = 100, option_y = 200, option_size = 20;
+    const uint32_t option_x = 50, option_y = 200, option_size = 15;
     const Color option_chosen = BLUE, option_not_chosen = BLACK;
     const uint32_t forward_x = 350, backward_x = 50, forward_y = 350, backward_y = forward_y, arrow_w = 100, arrow_h = arrow_w;
 
@@ -592,12 +628,12 @@ int main() {
 
     Scene* loading_menu = newScene();
 
-    Sprite* loading_display = newSprite(IMAGE, "assets/img/loading.png", 100, 100, IMAGE_SIZE_NATIVE, WHITE);
+    Sprite* loading_display = newSprite(IMAGE, "assets/img/loading.png", 125, 100, IMAGE_SIZE_NATIVE, WHITE);
 
     addScene(loading_menu, loading_display);
 
     const long loading_time_max = 30; //seconds
-    clock_t loading_time_old = 0, loading_time_new = 0;
+    double loading_time_old = 0, loading_time_new = 0;
     
     //the actual scene when we can finally link up the ds
     Scene* connection_menu = newScene();
@@ -612,7 +648,7 @@ int main() {
     //add a timer
     const long connection_time_start = 3 * 60 * 60; //3 hours
     long connection_time_left = connection_time_start;
-    clock_t connection_time_old = 0, connection_time_new = 0;
+    double connection_time_old = 0, connection_time_new = 0;
     Sprite* connection_time = newSprite(TEXT, " ", 50, 300, TEXT_SIZE(20), RED);
 
     addScene(connection_menu, connection_logo);
@@ -635,6 +671,8 @@ int main() {
             }
             else if (imageHovering(main_help) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                 textUpdate(main_error, " ");
+                instruction_index = 0;
+                textUpdate(instruction_text, instructions[instruction_index]);
                 cur_scene = instruction_menu;
             }
             else if (imageHovering(main_config) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -650,32 +688,13 @@ int main() {
                     textUpdate(main_error, "Error:Country code not configured properly");
                     goto screen_display;
                 }
-
                 textUpdate(main_error, " ");
                 
-                nic_count = 0;
-                for (int i = 0; i < nic_count; i++) {
-                    memset(nic_list[i], 0, strlen(nic_list[i]));
-                }
-                
-                struct dirent* dentry;
-                DIR* directory = opendir("/sys/class/net");
-                if (!directory) {
-                    textUpdate(main_error, "Error: could not load NIC list");
+                if (updateNIC(nic_list, &nic_count) == false) {
+                    textUpdate(main_error, "Error: could not load network device list");
                     cur_scene = main_menu;
                     goto screen_display;
                 }
-                while ((dentry = readdir(directory)) != NULL) {
-                    if (strcmp(dentry->d_name, ".") == 0 || strcmp(dentry->d_name, "..") == 0) continue;
-                    strcpy(nic_list[nic_count++], dentry->d_name);
-                }
-                closedir(directory);
-                
-                printf("found all nics:\n");
-                for (uint32_t i = 0; i < nic_count; i++) {
-                    printf("%s\n", nic_list[i]);
-                }
-                
                 if (nic_count > 0) {
                     //get the first 3
                     uint8_t i_1 = 0 % nic_count;
@@ -687,19 +706,16 @@ int main() {
                     textUpdate(nic_3, nic_list[i_3]);
                 }
                 else {
+                    textUpdate(main_error, "Error: no network devices found");
                     cur_scene = main_menu;
-                    continue;
+                    goto screen_display;
                 }
-
-
+                memset(chosen_nic, 0, strlen(chosen_nic));
+                nic_index = 0;
                 cur_scene = nic_menu; //nic_menu
             }
         }
         else if (cur_scene == nic_menu) {
-            
-            memset(chosen_nic, 0, strlen(chosen_nic));
-            nic_index = 0;
-
             textHoveringChange(nic_1, NULL, option_chosen, NULL, option_not_chosen);
             textHoveringChange(nic_2, NULL, option_chosen, NULL, option_not_chosen);
             textHoveringChange(nic_3, NULL, option_chosen, NULL, option_not_chosen);
@@ -739,29 +755,11 @@ int main() {
                 }
                 else if (imageHovering(nic_reload)) {
                     nic_index = 0;
-                    nic_count = 0;
-                    for (int i = 0; i < nic_count; i++) {
-                        memset(nic_list[i], 0, strlen(nic_list[i]));
-                    }
-                    
-                    struct dirent* dentry;
-                    DIR* directory = opendir("/sys/class/net");
-                    if (!directory) {
-                        textUpdate(main_error, "Error: could not load NIC list");
+                    if (updateNIC(nic_list, &nic_count) == false) {
+                        textUpdate(main_error, "Error: could not load network device list");
                         cur_scene = main_menu;
                         goto screen_display;
                     }
-                    while ((dentry = readdir(directory)) != NULL) {
-                        if (strcmp(dentry->d_name, ".") == 0 || strcmp(dentry->d_name, "..") == 0) continue;
-                        strcpy(nic_list[nic_count++], dentry->d_name);
-                    }
-                    closedir(directory);
-                    
-                    printf("found all nics:\n");
-                    for (uint32_t i = 0; i < nic_count; i++) {
-                        printf("%s\n", nic_list[i]);
-                    }
-                    
                     if (nic_count > 0) {
                         //get the first 3
                         uint8_t i_1 = 0 % nic_count;
@@ -771,6 +769,11 @@ int main() {
                         textUpdate(nic_1, nic_list[i_1]);
                         textUpdate(nic_2, nic_list[i_2]);
                         textUpdate(nic_3, nic_list[i_3]);
+                    }
+                    else {
+                        textUpdate(main_error, "Error: no network devices found");
+                        cur_scene = main_menu;
+                        goto screen_display;
                     }
                 }
 
@@ -786,14 +789,13 @@ int main() {
                         textUpdate(dns_2, dns_list[1 % dns_count]);
                         textUpdate(dns_3, dns_list[2 % dns_count]);
                     }
-
+                    memset(chosen_dns, 0, strlen(chosen_dns));
+                    dns_index = 0;
                     cur_scene = dns_menu;
                 }
             }
         }
         else if (cur_scene == dns_menu) {
-            if (chosen_dns) memset(chosen_dns, 0, strlen(chosen_dns));
-            dns_index = 0;
             
             textHoveringChange(dns_1, NULL, option_chosen, NULL, option_not_chosen);
             textHoveringChange(dns_2, NULL, option_chosen, NULL, option_not_chosen);
@@ -896,7 +898,7 @@ int main() {
                         fcntl(pipefd[0], F_SETFL, pipe_flags | O_NONBLOCK);
                         
                         //set up the loading
-                        loading_time_old = clock();
+                        loading_time_old = GetTime();
                     }
                     
 
@@ -910,9 +912,8 @@ int main() {
             //do this once the dongle arrives
             
             //has loading taken too long?
-            loading_time_new = clock();
-            double loading_time_passed = ((double)(loading_time_new - loading_time_old))/CLOCKS_PER_SEC;
-            loading_time_passed *= 10;
+            loading_time_new = GetTime();
+            double loading_time_passed = ((double)(loading_time_new - loading_time_old));
             printf("loading_time_passed: %lf\n", loading_time_passed);
             if (loading_time_passed > loading_time_max) {
                 perror("Backend returned an error.\n");
@@ -945,7 +946,7 @@ int main() {
                     char connection_info_string[512] = {0};
                     sprintf(connection_info_string, "You can now connect your DS!\nPrimary DNS:%s\nSSID:%s", chosen_dns, SSID);
                     textUpdate(connection_info, connection_info_string);
-                    connection_time_old = clock();
+                    connection_time_old = GetTime();
                     cur_scene = connection_menu;
                 }
                 else if (buffer[0] == '0') {
@@ -964,14 +965,14 @@ int main() {
             sprintf(connection_time_buffer, "Time left: %li", connection_time_left);
             textUpdate(connection_time, connection_time_buffer);
 
-            connection_time_new = clock();
-            double connection_time_taken = ((double)(connection_time_new - connection_time_old))/CLOCKS_PER_SEC;
+            connection_time_new = GetTime();
+            double connection_time_taken = ((double)(connection_time_new - connection_time_old));
             
             //printf("connection_time_new: %u\n", connection_time_new);
             //printf("connection_time_old: %u\n", connection_time_old);
             //printf("connection_time_taken: %lf\n", 10 * connection_time_taken);
             
-            connection_time_left = connection_time_start - (long)(10* connection_time_taken);
+            connection_time_left = connection_time_start - (long)(connection_time_taken);
             if (connection_time_left <= 0) {
                 //stop everything
                 sprintf(error_message, "Error:IVnet connection out of time");
@@ -1015,23 +1016,38 @@ int main() {
         }
         else if (cur_scene == instruction_menu) {
             imageHoveringChange(instruction_return, "assets/img/return_pressed.png", "assets/img/return.png");
-            if (imageHovering(instruction_return) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) cur_scene = main_menu;
+            imageHoveringChange(instruction_forward, "assets/img/forward_pressed.png", "assets/img/forward.png");
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                if (imageHovering(instruction_return)) cur_scene = main_menu;
+                else if (imageHovering(instruction_forward)) {
+                    instruction_index = (instruction_index + 1) % instruction_max;
+                    textUpdate(instruction_text, instructions[instruction_index]);
+                }
+            }            
         }
         else if (cur_scene == config_menu) {
-            memset(letter_buffer, 0, 10);
-            letter_count = 0;
             textUpdate(country_select_code, letter_buffer);
 
             imageHoveringChange(config_return, "assets/img/return_pressed.png", "assets/img/return.png");
             imageHoveringChange(config_country_select, "assets/img/config_country_select_pressed.png", "assets/img/config_country_select.png");
             if (imageHovering(config_return) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) cur_scene = main_menu;
-            if (imageHovering(config_country_select) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) cur_scene = country_select_menu; 
+            if (imageHovering(config_country_select) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                memset(letter_buffer, 0, sizeof(letter_buffer));
+                letter_count = 0;
+                textUpdate(country_select_code, letter_buffer);
+                cur_scene = country_select_menu;
+            } 
         }
         //config settings
         else if (cur_scene == country_select_menu) {
             //read keys, update the country code as reading, limit to two characters
             //ensure only letters are read, and auto convert to caps
             //ensure backspace works. ensure enter saves the config.
+
+            if (strlen(letter_buffer) == 2) {
+                country_select_code->colour = BLUE;
+            }
+            else country_select_code->colour = BLACK;
             
             int key = GetKeyPressed();
             if ('A' <= key && key <= 'Z' && letter_count < 2) { //uppercase
@@ -1069,12 +1085,17 @@ int main() {
         //DrawText(text, text_x, text_y, text_size, text_colour);
         EndDrawing();
     }
+    UnloadFont(font);
     CloseWindow();
     
     freeScene(main_menu);
     freeScene(info_menu);
+    freeScene(instruction_menu);
+    freeScene(config_menu);
+    freeScene(country_select_menu);
     freeScene(nic_menu);
     freeScene(dns_menu);
+    freeScene(loading_menu);
     freeScene(connection_menu);
     cur_scene = NULL;
     //UnloadImage(info_unpressed);

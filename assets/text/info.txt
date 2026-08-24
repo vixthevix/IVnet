@@ -1,13 +1,15 @@
 Hello! :3
 
-IVnet is a program that allows you to connect
-your Generation IV Pokemon games to custom
-fan made servers, all from your Linux desktop.
+IVnet is a program that allows you to 
+connect your Generation IV Pokemon 
+games to custom fan made servers, 
+all from your Linux desktop.
 
-By utilising a Network Interface Device
-(preferably a USB WiFi dongle), your system
-will be able to connect to it, and thus connect 
-to the servers.
+By using a Network Interface Device
+(preferably a USB WiFi dongle) on your
+desktop, your games can connect
+to the Internet, all in a couple of clicks!
+
 
 I hope you enjoy using IVnet!
 
