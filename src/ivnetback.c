@@ -1,8 +1,8 @@
 /*
-IVnet is a Linux-only program that utilises the OS to create an unsafe Access Point for a Nintendo DS Gen 4 Pokemon game to connect to.
-It utilises the Pokemon Classic Network to allow for online access and Mystery Gift support.
-Requires the use of an external dumb WiFI dongle that is supported by the Linux kernel.
-For development, follow Vanilla by MattKC for Linux-to-WiFidongle support to update the main GH page.
+IVnet backend.
+Linux program for connecting the generation IV Pokemon games to the internet.
+
+Visit https://github.com/vixthevix/IVnet for more info.
 */
 
 #include <stdio.h>

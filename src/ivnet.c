@@ -1,4 +1,9 @@
+/*
+IVnet frontend.
+Linux program for connecting the generation IV Pokemon games to the internet.
 
+Visit https://github.com/vixthevix/IVnet for more info.
+*/
 
 #include "raylib/src/raylib.h"
 #include <stdint.h>
@@ -12,9 +17,15 @@
 #include <sys/wait.h>
 #include <errno.h>
 
-//set a global font variable because im lazy
-Font font;
+//Default font data to be used for all text.
+Font font; 
+const float font_spacing = 2.0f;
 
+/*
+Reads a file and returns its contents as a string.
+@arg path -> path to the file.
+@return -> string containing contents.
+*/
 char* extractText(const char* path) {
     if (!path) return NULL;
     FILE* file = fopen(path, "r");
@@ -40,14 +51,17 @@ char* extractText(const char* path) {
     return text;
 }
 
-
-//to make life a little easier with multiple scenes, im gonna make some structs and functions
-
+/*
+Enum for differentiating Sprite data contents.
+*/
 typedef enum SpriteType {
     IMAGE,
     TEXT,
 } SpriteType;
 
+/*
+Holds data about something viewable in the opened window.
+*/
 typedef struct Sprite {
     void* data;
     SpriteType type;
@@ -58,7 +72,11 @@ typedef struct Sprite {
     Color colour;
 } Sprite;
 
-
+/*
+Returns appropriate size of Sprite data contents.
+@arg type -> type of data Sprite is holding.
+@return size of the data.
+*/
 size_t getSpriteSize(SpriteType type) {
     switch (type) {
         case IMAGE: return sizeof(Texture2D);
@@ -66,7 +84,11 @@ size_t getSpriteSize(SpriteType type) {
     }
     return 0;
 }
-
+/*
+Frees memory held by Sprite.
+@arg sprite -> target to free.
+@return free status.
+*/
 bool freeSprite(Sprite* sprite) {
     if (!sprite) return false;
     if (!(sprite->data)) {
@@ -91,12 +113,29 @@ bool freeSprite(Sprite* sprite) {
     return true;
 }
 
+/*
+Status values to allow an image to be loaded with its native
+height and width, in pixels.
+*/
 #define IMAGE_WIDTH_NATIVE 0
 #define IMAGE_HEIGHT_NATIVE 0
 #define IMAGE_SIZE_NATIVE IMAGE_WIDTH_NATIVE, IMAGE_HEIGHT_NATIVE
 
+/*
+Macro that takes advantage of normal Sprite proportions to translate
+into a font size. To be used with TEXT Sprites.
+*/
 #define TEXT_SIZE(size) size, size
 
+/*
+Creates a new Sprite.
+@arg type -> type of data to be held.
+@arg source -> where data is read from.
+@arg x, y -> coordinates of Sprite.
+@arg width, height -> proportions of Sprite.
+@arg colour -> colour of Sprite.
+@return generated Sprite or NULL.
+*/
 Sprite* newSprite(SpriteType type, const char* source, int32_t x, int32_t y, uint32_t width, uint32_t height, Color colour) {
     Sprite* target = (Sprite*) calloc(1, sizeof(Sprite));
     target->x = x;
@@ -113,6 +152,7 @@ Sprite* newSprite(SpriteType type, const char* source, int32_t x, int32_t y, uin
     switch (type) {
         case IMAGE: {
             if (!source) goto failure;
+            //with IMAGE, treat source as a file path.
             Texture2D* data = (Texture2D*)target->data;
             Image img = LoadImage(source);
             
@@ -130,7 +170,7 @@ Sprite* newSprite(SpriteType type, const char* source, int32_t x, int32_t y, uin
         }
         case TEXT: {
             if (!source) goto failure;
-            //expect the source to be an actual string and not a filepath
+            //With TEXT, treat source as a raw string.
             char** data = (char**)target->data;
             *data = (char*) calloc(strlen(source) + 1, sizeof(char));
             strcpy(*data, source);
@@ -147,6 +187,12 @@ Sprite* newSprite(SpriteType type, const char* source, int32_t x, int32_t y, uin
     return NULL;
 }
 
+/*
+Unused function for creating a memory-unique copy of a Sprite.
+@arg sprite -> copy target.
+@return new copy of sprite.
+*/
+/*
 Sprite* cloneSprite(Sprite* sprite) {
     Sprite* new = (Sprite*) malloc(sizeof(Sprite));
     new->x = sprite->x;
@@ -160,7 +206,13 @@ Sprite* cloneSprite(Sprite* sprite) {
 
     return NULL;
 }
+*/
 
+/*
+Displays a Sprite in the window.
+@arg sprite -> target to draw.
+@return status of display.
+*/
 bool displaySprite(Sprite* sprite) {
     if (!sprite || !(sprite->data)) return false;
     
@@ -173,20 +225,23 @@ bool displaySprite(Sprite* sprite) {
         case TEXT: {
             char** data = (char**)sprite->data;
             if (!(*data)) return false;
-            //DrawText(*data, sprite->x, sprite->y, sprite->width, sprite->colour);
-            DrawTextEx(font, *data, (Vector2){sprite->x, sprite->y}, sprite->width, 2, sprite->colour);
+            //use the set font and spacing to display text.
+            DrawTextEx(font, *data, (Vector2){sprite->x, sprite->y}, sprite->width, font_spacing, sprite->colour);
             break;
         }
         default: return false;
     }
-    
     return true;
 }
 
 
-//IMAGE specific function
+/*
+Checks if the mouse is hovering over an IMAGE Sprite.
+@arg sprite -> target to check.
+@return status of mouse hovering.
+*/
 bool imageHovering(Sprite* sprite) {
-    if (!sprite || !sprite->data) return false;
+    if (!sprite || !sprite->data || sprite->type != IMAGE) return false;
 
     //we need to get the bounding x and y
     uint32_t
@@ -196,9 +251,15 @@ bool imageHovering(Sprite* sprite) {
     y_high = sprite->y + sprite->height;
 
     Vector2 mouse = GetMousePosition();
-    return ((x_low <= mouse.x && mouse.x <= x_high) && (y_low <= mouse.y && mouse.y <= y_high));
+    return ((x_low < mouse.x && mouse.x < x_high) && (y_low < mouse.y && mouse.y < y_high));
 }
 
+/*
+Changes IMAGE sprite data depending on if mouse is hovering over it.
+@arg sprite -> target to change.
+@arg hovering_path -> path of image to change to if hovering
+@arg not_hovering_path -> path of image to change to if not hovering
+*/
 void imageHoveringChange(Sprite* sprite, const char* hovering_path, const char* not_hovering_path) {
     //if (!sprite || !sprite->data || sprite->type != IMAGE || !IsImageValid(hovering) || !IsImageValid(not_hovering)) return;
     if (!sprite || !sprite->data || sprite->type != IMAGE || !hovering_path || !not_hovering_path) return;
@@ -223,6 +284,11 @@ void imageHoveringChange(Sprite* sprite, const char* hovering_path, const char* 
     }
 }
 
+/*
+Updates data contents of TEXT Sprite.
+@arg sprite -> target to update.
+@arg new_text -> replaces target data.
+*/
 void textUpdate(Sprite* sprite, const char* new_text) {
     if (!sprite || !sprite->data || sprite->type != TEXT) return;
 
@@ -234,47 +300,40 @@ void textUpdate(Sprite* sprite, const char* new_text) {
     strcpy(*data, new_text);
 }
 
+/*
+Checks if the mouse is hovering over a TEXT Sprite.
+@arg sprite -> target to check.
+@return status of mouse hovering.
+*/
 bool textHovering(Sprite* sprite) {
     if (!sprite || !sprite->data || sprite->type != TEXT) return false;
-
-    //to check, we need a height and width.
-    //for this, we need to count the maximum num of chars before a newline (width)
-    //and number of newlines (height)
+    
+    char** data = (char**)sprite->data;
+    if (!(*data)) return false;
     
     uint32_t font_size = sprite->width;
     
-    uint32_t width = font_size;
-    uint32_t width_cur = 0;
-    uint32_t height = font_size;
-    char** data = (char**)sprite->data;
+    //use Raylib function to get bounds
+    Vector2 text_size = MeasureTextEx(font, *data, font_size, font_spacing);
 
-    for (uint32_t i = 0; i < strlen(*data); i++) {
-        if ((*data)[i] != '\n') {
-            char letter[2] = {(*data)[i], 0};
-            width_cur += MeasureText(letter, font_size);
-        }
-        else {
-            height += font_size;
-            if (width_cur > width) width = width_cur;
-            width_cur = 0;
-        }
-    }
-    if (width_cur > width) width = width_cur;
-    
-    
-    
-
-    uint32_t
+    const uint32_t
     x_low = sprite->x,
     y_low = sprite->y,
-    x_high = sprite->x + width,
-    y_high = sprite->y + height;
+    x_high = sprite->x + text_size.x,
+    y_high = sprite->y + text_size.y;
 
     Vector2 mouse = GetMousePosition();
-    return ((x_low <= mouse.x && mouse.x <= x_high) && (y_low <= mouse.y && mouse.y <= y_high));
-
+    return ((x_low < mouse.x && mouse.x < x_high) && (y_low < mouse.y && mouse.y < y_high));
 }
 
+/*
+Updates TEXT sprite data and colour if mouse is hovering or not.
+@arg sprite -> target to update.
+@arg hovering_text -> data to set if mouse is hovering.
+@arg hovering_colour -> Color to set if mouse is hovering.
+@arg not_hovering_text -> data to set if mouse is not hovering.
+@arg not_hovering_colour -> Color to set if mouse is not hovering.
+*/
 void textHoveringChange(Sprite* sprite, const char* hovering_text, Color hovering_colour, const char* not_hovering_text, Color not_hovering_colour) {
     if (!sprite || !sprite->data || sprite->type != TEXT) return;
 
@@ -291,13 +350,19 @@ void textHoveringChange(Sprite* sprite, const char* hovering_text, Color hoverin
 
 }
 
-
+/*
+Struct that holds a dynamic list of Sprite for a particular scenario.
+*/
 typedef struct Scene {
     Sprite** sprites;
     uint32_t len;
     uint32_t capacity;
 } Scene;
 
+/*
+Intialises a base Scene.
+@return empty Scene.
+*/
 Scene* newScene() {
     const uint32_t initCap = 8;
     Scene* target = (Scene*) malloc(sizeof(Scene));
@@ -310,10 +375,16 @@ Scene* newScene() {
     return target;
 }
 
+/*
+Adds a Sprite to a Scene.
+@arg scene -> target Scene.
+@arg sprite -> Sprite to add to scene.
+@return success status.
+*/
 bool addScene(Scene* scene, Sprite* sprite) {
     if (!scene || !scene->sprites || !sprite) return false;
     const uint32_t load = scene->len / scene->capacity * 100;
-    if (load > 60) {
+    if (load > 60) { //is the list 60% full?
         scene->capacity <<= 1; //double
         scene->sprites = (Sprite**) realloc(scene->sprites, sizeof(Sprite*) * scene->capacity);
     }
@@ -321,6 +392,10 @@ bool addScene(Scene* scene, Sprite* sprite) {
     return true;
 }
 
+/*
+Displays all of the Sprites in a Scene.
+@arg scene -> target Scene to read Sprites from.
+*/
 void displayScene(Scene* scene) {
     if (!scene || !scene->sprites) return;
 
@@ -330,6 +405,11 @@ void displayScene(Scene* scene) {
     }
 }
 
+/*
+Frees a Scene and its contents from memory.
+@arg scene -> Scene to free.
+@return status of free.
+*/
 bool freeScene(Scene* scene) {
     if (!scene) return false;
     if (!scene->sprites) {
@@ -342,11 +422,16 @@ bool freeScene(Scene* scene) {
         if (!status) printf("Could not free sprite #%u of current scene\n", i);
     }
 
+    free(scene->sprites);
     free(scene);
     return true;
 }
 
-//nic retrieval
+/*
+Reads available Network Interface Devices.
+@arg nic_list -> array of strings to hold NID names.
+@arg nic_count -> pointer to hold NID count.
+*/
 bool updateNIC(char nic_list[256][75], uint32_t* nic_count) {
     //reset
     uint32_t count = 0;
@@ -358,6 +443,7 @@ bool updateNIC(char nic_list[256][75], uint32_t* nic_count) {
     DIR* directory = opendir("/sys/class/net");
     if (!directory) return false;
     while ((dentry = readdir(directory)) != NULL) {
+        //ignore '.' and '..' directories
         if (strcmp(dentry->d_name, ".") == 0 || strcmp(dentry->d_name, "..") == 0) continue;
         strcpy(nic_list[count++], dentry->d_name);
     }
@@ -368,26 +454,32 @@ bool updateNIC(char nic_list[256][75], uint32_t* nic_count) {
     return true;
 }
 
+/*
+Struct to hold user saved information for all sessions.
+In the format:
+    country_code -> stores IEEE 802.11d code 
+    END
+*/
 typedef struct Config {
     char country_code[3];
 } Config;
 
+/*
+Generates a configuration file, and saves its contents to Config.
+@arg path -> name of configuration file.
+@return Config holding path data.
+*/
 Config generateConfig(const char* path) {
-    /*
-    In the format:
-        Country Code
-        END
-    */
-
     Config config = {0};
 
     if (!path) return config;
     FILE* file = fopen(path, "r");
     if (!file) {
-        //try creating it first
+        //file doesn't exist, so create it.
         file = fopen(path, "w");
         if (!file) return config;
         fclose(file);
+        //if created, go back to reading it.
         file = fopen(path, "r");
         if (!file) return config;
     }
@@ -407,6 +499,12 @@ Config generateConfig(const char* path) {
     return config;
 }
 
+/*
+Writes Config to config file.
+@arg config -> current Config data.
+@arg path -> config file to write to.
+@return status of write.
+*/
 bool saveConfig(Config config, const char* path) {
     if (!path) return false;
     FILE* file = fopen(path, "w");
@@ -419,60 +517,55 @@ bool saveConfig(Config config, const char* path) {
     return true;
 }
 
-int main() { 
+
+int main() {
+    //constants to use.
     const char* SSID = "IVnet";
-    const char* config_path = "IVnet.conf";    
+    const char* config_path = "IVnet.conf";
+    const char* font_path = "assets/font/EightBitDragon-anqx.ttf";
+
+    //default pointer for loading in text from file.
+    char* text = NULL;
+
     Config config = generateConfig(config_path);
 
-
-    //IPC stuff
-    pid_t back_p = 0;
-
-    //set up 2 pipes
-    //one is for backend to frontend communication, to ensure the AP has been set up
-    //the other acts like a signal from frontend to backend, to turn off the backend.
-    //we cant use actual signals because ivnet is not meant to run as root.
-    int pipefd[2] = {0};
-    int signalfd[2] = {0};
-   
+    //IPC set up
+    pid_t back_p = 0; //backend fd
+    int pipefd[2] = {0}; //main backend->frontend communication
+    int signalfd[2] = {0}; //signal-like frontend->backend pipe, to kill backend when needed.
+    
+    //disable RayLib messaging.
     SetTraceLogLevel(LOG_NONE);
 
+    //Window setup
     const uint32_t 
     width = 500,
     height = 500;
     InitWindow(width, height, "IVnet");
     SetTargetFPS(60);
-    font = LoadFontEx("assets/font/EightBitDragon-anqx.ttf", 100, 0, 250);
+    
+    //Font setup
+    font = LoadFontEx(font_path, 100, 0, 250);
     if (font.texture.id == 0) {
         printf("Could not load custom font, resorting to default...\n");
     }
 
+    //Current scene to display
     Scene* cur_scene = NULL;
     
     Scene* main_menu = newScene();
     
     Sprite* logo = newSprite(IMAGE, "assets/img/logo.png", 125, 0, IMAGE_SIZE_NATIVE, WHITE);
-
     Sprite* info = newSprite(IMAGE, "assets/img/info.png", 425, 0, 75, 75, WHITE);
-    //Image info_unpressed = LoadImage("assets/img/info.png");
-    //ImageResize(&info_unpressed, info->width, info->height);
-    //Image info_pressed = LoadImage("assets/img/info_pressed.png");
-    //ImageResize(&info_pressed, info->width, info->height);
-   
+
     Sprite* main_start = newSprite(IMAGE, "assets/img/start.png", 150, 225, IMAGE_SIZE_NATIVE, WHITE);
     Sprite* main_help = newSprite(IMAGE, "assets/img/help.png", 150, 325, IMAGE_SIZE_NATIVE, WHITE);
     Sprite* main_config = newSprite(IMAGE, "assets/img/config.png", 150, 425, IMAGE_SIZE_NATIVE, WHITE);
     
+    //Set up error displaying service in main menu.
     bool error_received = false;
     char error_message[512] = {0};
     Sprite* main_error = newSprite(TEXT, " ", 15, 200, TEXT_SIZE(12), RED); 
-    //testing an animated gif
-    //Sprite* teto_dance = newSprite(IMAGE, "teto_dance.gif", 0, 0, IMAGE_SIZE_NATIVE, WHITE);
-    //Texture2D* teto_dance_data = (Texture2D*)teto_dance->data;
-    //UnloadTexture(*teto_dance_data);
-    //Image teto_dance_gif = LoadImageAnim("teto_dance.gif", &(int){ 11 });
-    //*teto_dance_data = LoadTextureFromImage(teto_dance_gif);
-
 
     addScene(main_menu, logo);
     addScene(main_menu, info);
@@ -480,27 +573,27 @@ int main() {
     addScene(main_menu, main_help);
     addScene(main_menu, main_config);
     addScene(main_menu, main_error);
-    //addScene(main_menu, teto_dance);
     
     
     Scene* info_menu = newScene();
 
-    char* text = extractText("assets/text/info.txt");
-    printf("TEXT IS %s\n", text);
+    text = extractText("assets/text/info.txt");
     Sprite* info_text = newSprite(TEXT, text, 15, 150, TEXT_SIZE(15), BLACK);
     free(text);
 
     Sprite* info_return = newSprite(IMAGE, "assets/img/return.png", 1, 1, 50, 50, WHITE);
     
-    Color teto_colour = {255, 255, 255, 100};
+    Color teto_colour = {255, 255, 255, 100}; //slightly transparent
     Sprite* teto = newSprite(IMAGE, "assets/img/teto.png", 250, 0, 256, 256, teto_colour);
     
     addScene(info_menu, teto);
     addScene(info_menu, info_text);
     addScene(info_menu, info_return);
     
+    
     Scene* instruction_menu = newScene();
 
+    //array of instruction contents.
     char* instructions[] = {
         extractText("assets/text/instructions_0.txt"),
         extractText("assets/text/instructions_1.txt"),
@@ -527,8 +620,6 @@ int main() {
     //contains buttons for selecting which config to choose.
     Sprite* config_country_select = newSprite(IMAGE, "assets/img/config_country_select.png", 75, 150, 150, 150, WHITE);
 
-
-
     addScene(config_menu, config_logo);
     addScene(config_menu, config_return);
     addScene(config_menu, config_info);
@@ -537,21 +628,18 @@ int main() {
     Scene* country_select_menu = newScene();
     
     Sprite* country_select_instructions = newSprite(TEXT, "Type out your country code\n(All caps, only 2 letters)", 75, 100, TEXT_SIZE(20), BLACK);
-
     Sprite* country_select_code = newSprite(TEXT, "", 200, 200, TEXT_SIZE(40), BLACK);
+
+    //buffer to store contents of configured country code.
+    char letter_buffer[10] = {0};
+    int letter_count = 0;
 
     addScene(country_select_menu, country_select_instructions);
     addScene(country_select_menu, country_select_code);
     
-    char letter_buffer[10] = {0};
-    int letter_count = 0;
     
-    //make a config struct to store info from ivnet.conf inside
-
-    //we need a way to get user input with raylib.
-    //
-
-    //with the setup, we need to pick a NIC and a DNS, and then we can start connecting
+    //Default constant data for NID and DNS selection screens.
+    //This is because they are practically identical.
     const uint32_t option_x = 50, option_y = 200, option_size = 15;
     const Color option_chosen = BLUE, option_not_chosen = BLACK;
     const uint32_t forward_x = 350, backward_x = 50, forward_y = 350, backward_y = forward_y, arrow_w = 100, arrow_h = arrow_w;
@@ -560,15 +648,14 @@ int main() {
 
     char nic_list[256][75] = {0};
     uint32_t nic_count = 0;
-    const uint8_t nic_screen_count = 3;
+    const uint8_t nic_screen_count = 3; //how many NIDs to display on screen at once.
     uint32_t nic_index = 0;
 
     char chosen_nic[75] = {0};
 
     Sprite* nic_logo = newSprite(IMAGE, "assets/img/nic_logo.png", 125, -25, IMAGE_SIZE_NATIVE, WHITE);
 
-    //we need a series of buttons for each string in nic_list. go with 3, and then add an forward if needed.
-
+    //text containing NID names.
     Sprite* nic_1 = newSprite(TEXT, "Placeholder", option_x, option_y, TEXT_SIZE(option_size), option_not_chosen);
     Sprite* nic_2 = newSprite(TEXT, "Placeholder", option_x, option_y + 50, TEXT_SIZE(option_size), option_not_chosen);
     Sprite* nic_3 = newSprite(TEXT, "Placeholder", option_x, option_y + 100, TEXT_SIZE(option_size), option_not_chosen);
@@ -591,22 +678,18 @@ int main() {
 
     Scene* dns_menu = newScene();
 
-    //lets use a set amount of DNS
-
     char* dns_list[] = {
         "178.62.43.212 - PokeClassicNetwork",
-        //"100.100.100.100",
-        //"45.6.3.1 - my network",
+        "167.235.229.36 - PCN Backup",
     };
     uint32_t dns_count = sizeof(dns_list) / sizeof(dns_list[0]);
     uint32_t dns_index = 0;
 
-    printf("dns count: %u\n", dns_count);
-    char chosen_dns[20] = {0};
+    char chosen_dns[75] = {0};
 
     Sprite* dns_logo = newSprite(IMAGE, "assets/img/dns_logo.png", 125, -25, IMAGE_SIZE_NATIVE, WHITE);
 
-    //same deal with nic, have 3 viewable at a time
+    //same deal with NID, have 3 viewable at a time.
     Sprite* dns_1 = newSprite(TEXT, "Placeholder", option_x, option_y, TEXT_SIZE(option_size), option_not_chosen);
     Sprite* dns_2 = newSprite(TEXT, "Placeholder", option_x, option_y + 50, TEXT_SIZE(option_size), option_not_chosen);
     Sprite* dns_3 = newSprite(TEXT, "Placeholder", option_x, option_y + 100, TEXT_SIZE(option_size), option_not_chosen);
@@ -625,7 +708,6 @@ int main() {
     addScene(dns_menu, dns_backward);
 
     //loading screen (before receiving confirmation from child process)
-
     Scene* loading_menu = newScene();
 
     Sprite* loading_display = newSprite(IMAGE, "assets/img/loading.png", 125, 100, IMAGE_SIZE_NATIVE, WHITE);
@@ -639,10 +721,7 @@ int main() {
     Scene* connection_menu = newScene();
     
     Sprite* connection_logo = newSprite(IMAGE, "assets/img/success.png", 125, -25, IMAGE_SIZE_NATIVE, WHITE);
-
-    //add a back button
     Sprite* connection_stop = newSprite(IMAGE, "assets/img/connection_stop.png", 125, 275, IMAGE_SIZE_NATIVE, WHITE);
-
     Sprite* connection_info = newSprite(TEXT, " ", 50, 200, TEXT_SIZE(20), BLUE);
     
     //add a timer
@@ -738,7 +817,6 @@ int main() {
                     choice = *data;
                 }
                 else if (imageHovering(nic_return)) {
-                    printf("nic returning to main\n");
                     cur_scene = main_menu;
                 }
                 else if (imageHovering(nic_forward)) {
@@ -779,12 +857,8 @@ int main() {
 
                 if (choice != NULL) {
                     strcpy(chosen_nic, choice);
-                    printf("chosen nic: %s\n", chosen_nic);
-                    
                     //we now have to load up our DNS stuff
-
                     if (dns_count > 0) {
-                        printf("all dns: %s\n", dns_list[0]);
                         textUpdate(dns_1, dns_list[0 % dns_count]);
                         textUpdate(dns_2, dns_list[1 % dns_count]);
                         textUpdate(dns_3, dns_list[2 % dns_count]);
@@ -796,7 +870,6 @@ int main() {
             }
         }
         else if (cur_scene == dns_menu) {
-            
             textHoveringChange(dns_1, NULL, option_chosen, NULL, option_not_chosen);
             textHoveringChange(dns_2, NULL, option_chosen, NULL, option_not_chosen);
             textHoveringChange(dns_3, NULL, option_chosen, NULL, option_not_chosen);
@@ -819,7 +892,6 @@ int main() {
                     choice = *data;
                 }
                 else if (imageHovering(dns_return)) {
-                    printf("dns returning to nic\n");
                     cur_scene = nic_menu;
                 }
                 else if (imageHovering(dns_forward)) {
@@ -849,12 +921,8 @@ int main() {
                     }
 
                     strncpy(chosen_dns, choice, dash_index);
-                    printf("chosen dns: %s\n", chosen_dns);
-
-
-                    //we now have a chosen dns and nic.
-                    //fork and set up a child process.
-                    //set up the pipes
+                    
+                    //with a chosen NID and DNS, we can start the backend
 
                     pipe(pipefd);
                     pipe(signalfd);
@@ -863,7 +931,7 @@ int main() {
                     if (back_p == 0) { //child - backend
                         
                         //normal communication
-                        close(pipefd[0]); //child does not read
+                        close(pipefd[0]); //child does not input
                         dup2(pipefd[1], STDOUT_FILENO); //redirect output to stdout
                         close(pipefd[1]); //no longer using this output
                         
@@ -889,39 +957,36 @@ int main() {
                         exit(1);
                     }
                     else { //parent - frontend
-                        //parent doesnt write
-                        close(pipefd[1]);
-                        //parent does not read signal
-                        close(signalfd[0]);
+                        close(pipefd[1]); //parent doesnt output status
+                        close(signalfd[0]); //parent does not input signal
                         //set read to be non-blocking
                         int pipe_flags = fcntl(pipefd[0], F_GETFL, 0);
                         fcntl(pipefd[0], F_SETFL, pipe_flags | O_NONBLOCK);
                         
-                        //set up the loading
+                        //set up the loading time
                         loading_time_old = GetTime();
                     }
-                    
-
                     cur_scene = loading_menu; 
                 }
             }
             
         }
         else if (cur_scene == loading_menu) {
-            //preferably, we want the pipe to be non-blocking, so that we can check and display at the same time.
-            //do this once the dongle arrives
             
             //has loading taken too long?
             loading_time_new = GetTime();
             double loading_time_passed = ((double)(loading_time_new - loading_time_old));
-            printf("loading_time_passed: %lf\n", loading_time_passed);
             if (loading_time_passed > loading_time_max) {
                 perror("Backend returned an error.\n");
+                
                 sprintf(error_message, "Error:backend took too long");
                 textUpdate(main_error, error_message);
+                
                 cur_scene = main_menu;
+                
                 kill(back_p, SIGKILL); //just kill the backend
                 waitpid(back_p, NULL, 0);
+                
                 goto screen_display;
             }
 
@@ -929,9 +994,12 @@ int main() {
             if (kill(back_p, 0) != 0) {
                 if (errno == ESRCH) {
                     perror("Backend returned an error.\n");
+                    
                     sprintf(error_message, "Error:backend terminated unexpectedly");
                     textUpdate(main_error, error_message);
+                    
                     cur_scene = main_menu;
+                    
                     goto screen_display;
                 }
             }
@@ -946,18 +1014,20 @@ int main() {
                     char connection_info_string[512] = {0};
                     sprintf(connection_info_string, "You can now connect your DS!\nPrimary DNS:%s\nSSID:%s", chosen_dns, SSID);
                     textUpdate(connection_info, connection_info_string);
+                    
+                    //set up the connection time limit
                     connection_time_old = GetTime();
+                    
                     cur_scene = connection_menu;
                 }
                 else if (buffer[0] == '0') {
                     perror("Backend returned an error.\n");
                     sprintf(error_message, "Error:%s", &buffer[2]);
                     textUpdate(main_error, error_message);
-                    cur_scene = main_menu;
                     
+                    cur_scene = main_menu;
                 }
             }
-
         }
         else if (cur_scene == connection_menu) {
             //update the timer
@@ -967,11 +1037,7 @@ int main() {
 
             connection_time_new = GetTime();
             double connection_time_taken = ((double)(connection_time_new - connection_time_old));
-            
-            //printf("connection_time_new: %u\n", connection_time_new);
-            //printf("connection_time_old: %u\n", connection_time_old);
-            //printf("connection_time_taken: %lf\n", 10 * connection_time_taken);
-            
+                        
             connection_time_left = connection_time_start - (long)(connection_time_taken);
             if (connection_time_left <= 0) {
                 //stop everything
@@ -985,11 +1051,8 @@ int main() {
                 connection_close:
                 //send the signal to stop using pipe
                 close(signalfd[1]);
-                //kill(back_p, SIGTERM);
-                printf("killed backend\n");
                 //wait for backend to finish cleaning up
                 waitpid(back_p, NULL, 0);
-                printf("waited for backend to finish\n");
                 //reset it
                 back_p = -1;
 
@@ -1020,6 +1083,7 @@ int main() {
             if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                 if (imageHovering(instruction_return)) cur_scene = main_menu;
                 else if (imageHovering(instruction_forward)) {
+                    //advance instructions
                     instruction_index = (instruction_index + 1) % instruction_max;
                     textUpdate(instruction_text, instructions[instruction_index]);
                 }
@@ -1069,9 +1133,11 @@ int main() {
                 if (letter_count == 2) { //only if we have a complete country code
                     strcpy(config.country_code, letter_buffer);
                     saveConfig(config, config_path);
+                    
                     char config_info_buffer[100] = {0};
                     sprintf(config_info_buffer, "CURRENT CONFIG:\n\nCOUNTRY CODE: %s", config.country_code);
                     textUpdate(config_info, config_info_buffer);
+                    
                     cur_scene = config_menu;
                 }
             }
@@ -1081,13 +1147,12 @@ int main() {
         BeginDrawing();
         ClearBackground(WHITE);
         displayScene(cur_scene);
-        //DrawTexture(logo, logo_x, logo_y, WHITE);
-        //DrawText(text, text_x, text_y, text_size, text_colour);
         EndDrawing();
     }
     UnloadFont(font);
     CloseWindow();
     
+    //cleanup
     freeScene(main_menu);
     freeScene(info_menu);
     freeScene(instruction_menu);
@@ -1098,12 +1163,6 @@ int main() {
     freeScene(loading_menu);
     freeScene(connection_menu);
     cur_scene = NULL;
-    //UnloadImage(info_unpressed);
-    //UnloadImage(info_pressed);
-    //UnloadImage(return_unpressed);
-    //UnloadImage(return_pressed);
 
-    //UnloadTexture(logo);
-    //free(text);
     return 0;
 }

@@ -1,0 +1,27 @@
+#!/bin/env bash
+#we are compiling ivnet and ivnetback
+
+mkdir bin
+
+gcc src/ivnetback.c -o bin/ivnetback
+success=$?
+
+
+if [ $success -ne 0 ]; then
+    printf "\nCould not compile backend\n"
+    exit
+fi
+
+gcc src/ivnet.c -o bin/ivnet -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
+success=$?
+
+
+if [ $success -ne 0 ]; then
+    printf "\nCould not compile frontend\n"
+    exit
+fi
+
+printf "\nIVnet successfully compiled!\nRun 'bash ivnetRun' or 'bin/ivnet' to begin\n"
+printf "To run just the backend, run 'bin/ivnetback'\n"
+
+bin/ivnet
