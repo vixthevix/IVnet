@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
     
     //are we running as root?
     if (geteuid() != 0) {
-        printf("0:Must run as root\n");
+        printf("IVnet:0:Must run as root\n");
         return 1;
     }
     
@@ -122,7 +122,7 @@ int main(int argc, char** argv) {
     const int 
     arg_max = 4 + 1;
     if (argc < arg_max) {
-        printf("0:Not enough parameters\n");
+        printf("IVnet:0:Not enough parameters\n");
         perror("IVnet requires:\nname of NIC,\nDNS to connect to,\nISO 3166-1 alpha-2 country code,\nSSID to assign\n");
         return 1;
     }
@@ -140,7 +140,7 @@ int main(int argc, char** argv) {
     struct dirent* dentry;
     DIR* directory = opendir("/sys/class/net");
     if (!directory) {
-        printf("0:could not open /sys/class/net to verify %s.\n", dongle);
+        printf("IVnet:0:could not open /sys/class/net to verify %s.\n", dongle);
         return 1;
     }
     bool dongle_valid = false;
@@ -152,13 +152,13 @@ int main(int argc, char** argv) {
     }
     closedir(directory);
     if (!dongle_valid) {
-        printf("0:%s is not a valid NIC.\n", dongle);
+        printf("IVnet:0:%s is not a valid NIC.\n", dongle);
         return 1;
     }
 
     //verify DNS
     if (!DNS) {
-        printf("0:DNS invalid\n");
+        printf("IVnet:0:DNS invalid\n");
         return 1;
     }
     char dns_valid_buffer[10] = {0};
@@ -169,7 +169,7 @@ int main(int argc, char** argv) {
             dns_dot_count++;
             int num = atoi(dns_valid_buffer);
             if (num < 0 || num > 255) {
-                printf("0:DNS invalid\n");
+                printf("IVnet:0:DNS invalid\n");
                 return 1;
             }
             memset(dns_valid_buffer, 0, dns_valid_index);
@@ -180,29 +180,29 @@ int main(int argc, char** argv) {
         if (i == strlen(DNS) - 1) {
             int num = atoi(dns_valid_buffer);
             if (num < 0 || num > 255) {
-                printf("0:DNS invalid\n");
+                printf("IVnet:0:DNS invalid\n");
                 return 1;
             }
         }
     }
     
     if (dns_dot_count != 3) {
-        printf("0:DNS invalid\n");
+        printf("IVnet:0:DNS invalid\n");
         return 1;
     }
     
     //verify countrycode
     //must be 2 characters long, and be in all caps
     if (!country_code) {
-        printf("0:Country code invalid\n");
+        printf("IVnet:0:Country code invalid\n");
         return 1;
     }
     if (strlen(country_code) != 2) {
-        printf("0:Country code invalid, must be 2 characters long and in all caps\n");
+        printf("IVnet:0:Country code invalid, must be 2 characters long and in all caps\n");
         return 1;
     }
     if ((country_code[0] < 'A' || country_code[0] > 'Z') || (country_code[1] < 'A' || country_code[1] > 'Z')) {
-        printf("0:Country code invalid, must be 2 characters long and in all caps\n");
+        printf("IVnet:0:Country code invalid, must be 2 characters long and in all caps\n");
         return 1;
     }
 
@@ -210,7 +210,7 @@ int main(int argc, char** argv) {
     struct ifaddrs* ifa_head = NULL;
     status = getifaddrs(&ifa_head);
     if (status != 0 || !ifa_head) {
-        printf("0:Could not retreive list of IP addresses for binding with %s\n", dongle);
+        printf("IVnet:0:Could not retreive list of IP addresses for binding with %s\n", dongle);
         return 1;
     }
     struct ifaddrs* cur_address = ifa_head;
@@ -282,7 +282,7 @@ int main(int argc, char** argv) {
     freeifaddrs(ifa_head);
 
     if (!ipValid) {
-        printf("0:ip collision, error\n");
+        printf("IVnet:0:ip collision, error\n");
         return 1;
     }
     
@@ -308,7 +308,7 @@ int main(int argc, char** argv) {
     //if there is a newline, clear it up. strcspn returns the index where a substring first appears.
     phy[strcspn(phy, "\n")] = 0;
     if (strlen(phy) == 0) {
-        printf("0:Could not get physical identifier for %s\n", dongle);
+        printf("IVnet:0:Could not get physical identifier for %s\n", dongle);
         return 1;
     }
 
@@ -324,16 +324,35 @@ int main(int argc, char** argv) {
     sleep(1);
 
     //Remove the dongle from the system
+    
+
     sprintf(cmd, "iw dev %s del > /dev/null 2>&1", dongle);
     system(cmd);
 
     sleep(1);
 
     //Add it back, with new identifier and as an access point
-    sprintf(cmd, "iw phy phy%s interface add %s type __ap", phy, dongle_new);
+    sprintf(cmd, "iw phy phy%s interface add %s type __ap", phy, dongle);
     system(cmd);
 
     sleep(1);
+    
+    sprintf(cmd, "ip link set dev %s down", dongle);
+    system(cmd);
+
+    sleep(1);
+    
+    sprintf(cmd, "ip link set dev %s name %s", dongle, dongle_new);
+    system(cmd);
+
+    sleep(1);
+    
+    //sprintf(cmd, "iw dev %s set down", dongle);
+    //system(cmd);
+
+    //sleep(1);
+
+
 
     //Clear software WiFi blocks, just in case 
     system("rfkill unblock wifi");
@@ -345,13 +364,13 @@ int main(int argc, char** argv) {
     
     status = system(cmd);
     if (status == -1) {
-        printf("0:could not set up %s with new ip address\n", dongle);
+        printf("IVnet:0:could not set up %s with new ip address\n", dongle);
         return 1;
     }
     else {
         int exit_status = WEXITSTATUS(status);
         if (exit_status != 0) {
-            printf("0:could not set up %s with new ip address\n", dongle);
+            printf("IVnet:0:could not set up %s with new ip address\n", dongle);
             return 1;
         }
     }
@@ -378,6 +397,7 @@ int main(int argc, char** argv) {
     //to be running for 3 hours only.
     //hands out ip address in the range 10 to 50, so a max of 40 Devices can connect at once.
     const char* dnsmasq_contents = 
+    "port=0\n"
     "interface=%1$s\n" //dongle name
     "bind-interfaces\n"
     "dhcp-range=%2$u.%3$u.%4$u.10,%2$u.%3$u.%4$u.50,3h\n" //dongle access point range and timer
@@ -386,14 +406,14 @@ int main(int argc, char** argv) {
     //Write out the config files
     FILE* hostapd = fopen("/tmp/ivnet/hostapd.conf", "w");
     if (!hostapd) {
-        printf("0:could not open hostapd.conf\n");
+        printf("IVnet:0:could not open hostapd.conf\n");
         return 1;
     }
     fprintf(hostapd, hostapd_contents, dongle_new, country_code, SSID);
     fclose(hostapd);
     FILE* dnsmasq = fopen("/tmp/ivnet/dnsmasq.conf", "w");
     if (!dnsmasq) {
-        printf("0:could not open dnsmasq.conf\n");
+        printf("IVnet:0:could not open dnsmasq.conf\n");
         return 1;
     }
     fprintf(dnsmasq, dnsmasq_contents, dongle_new, dongle_ip[0], dongle_ip[1], dongle_ip[2], DNS);
@@ -402,7 +422,7 @@ int main(int argc, char** argv) {
     //ip_forward is a parameter file that turns your Linux computer into a router
     FILE* ip_forward = fopen("/proc/sys/net/ipv4/ip_forward", "w");
     if (!ip_forward) {
-        printf("0:could not open ip_forward file.\n");
+        printf("IVnet:0:could not open ip_forward file.\n");
         return 1;
     }
     fwrite("1", sizeof(char), 1, ip_forward);
@@ -421,7 +441,7 @@ int main(int argc, char** argv) {
 
     hostapd_p = fork();
     if (hostapd_p < 0) {
-        printf("0:could not fork into hostapd\n");
+        printf("IVnet:0:could not fork into hostapd\n");
         return 1;
     }
     else if (hostapd_p == 0) { //child process
@@ -460,7 +480,7 @@ int main(int argc, char** argv) {
     else { //parent
         dnsmasq_p = fork();
         if (dnsmasq_p < 0) {
-            printf("0:could not fork into dnsmasq\n");
+            printf("IVnet:0:could not fork into dnsmasq\n");
             return 1;
         }
         else if (dnsmasq_p == 0) { //child
@@ -482,7 +502,7 @@ int main(int argc, char** argv) {
     }
     
     //If child processes did not fail to start, we're golden.
-    printf("1:Success!\n");
+    printf("IVnet:1:Success!\n");
 
     //We wait for either a termination signal (running)
     //Or for the frontend to close the signal pipe
@@ -492,13 +512,13 @@ int main(int argc, char** argv) {
         //kill command can check status of process when signal is 0
         if (kill(hostapd_p, 0) != 0) {
             if (errno == ESRCH) {
-                printf("0:hostapd terminated early\n");
+                printf("IVnet:0:hostapd terminated early\n");
                 break;
             }
         }
         if (kill(dnsmasq_p, 0) != 0) {
             if (errno == ESRCH) {
-                printf("0:dnsmasq terminated early\n");
+                printf("IVnet:0:dnsmasq terminated early\n");
                 break;
             }
         }
