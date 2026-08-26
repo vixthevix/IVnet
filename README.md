@@ -1,30 +1,99 @@
-edit on https://markdownlivepreview.com/
-
 # IVnet
 Connect your generation IV Pokemon games to the Internet!
 
 ## Installation
 ### Requirements
 
-Need: iw, rfkill, iptables, hostapd, dnsmasq, gcc.
+Before you can compile IVnet, run:
 
-Create install commands for major package managers.
-
-`Use single weird apostrophes for inline code blocks.`
-```
-Use triple weird apostrophes for whole code blocks.
-```
-
-ON LAPTOP, check if raylib needs installation after git cloning. If so, provide a link to [raylib](https://github.com/raysan5/raylib) for the installation process.
+- **Debian/Ubuntu/Mint**
+  ```
+  apt install build-essential git make iproute2 iw rfkill iptables hostapd dnsmasq
+  ```
+- **Arch**
+  ```
+  pacman -S base-devel git make iproute2 iw rfkill iptables hostapd dnsmasq
+  ```
+- **Fedora**
+  ```
+  sudo dnf install @development-tools git iproute iw rfkill iptables hostapd dnsmasq
+  ```
 
 ### Build
 
-Use the ivnetMake script to compile the frontend and backend. Use ivnetRun to run the system, or run `bin/ivnet`
+**Installing [raylib](https://github.com/raysan5/raylib)**:
+
+IVnet uses raylib as its frontend, so ensure that it is cloned and built in the `src` folder.
+
+For building statically with make:
+```
+#In the IVnet folder
+cd src
+git clone https://github.com/raysan5/raylib.git
+cd raylib/src
+make PLATFORM=PLATFORM_DESKTOP
+sudo make install
+```
+**Building IVnet**:
+
+Run `./ivnetMake` in the IVnet folder. Alternatively, run the script with your command line interpreter (e.g. `bash`, `zsh` etc.) or copy and run the `gcc` commands directly in your terminal. 
+
+
+## Software guide
+
+### Run
+
+Run `./ivnetRun` or `bin/ivnet` in the IVnet folder.
+
+### Setting up a session
+Before you begin, ensure you have:
+- An available Network Interface Device (NID) that is not your main WiFi device, such as a WiFi dongle.
+- Configured your country code in the config menu (look for your code in 'More Information' below).
+
+Once this is done:
+
+1) On the main menu, click **START**.
+2) Select your NID 
+   (if using a dongle, refresh while unplugged 
+   and while plugged to recognize it).
+3) Select a DNS server to connect to.
+4) Wait for the device to be set up, 
+   and if no errors occur, you are good to go!
+5) On your Pokemon D/P/Pt/HG/SS game, 
+   go to your Nintendo WFC settings.
+6) Go to Nintendo Wi-Fi Connection Settings -> 
+   Connection 1/2/3 (whichever is available) -> 
+   Search for an Access Point -> 
+   IVnet -> wait for the connection to set up.
+7) Once connected, click on Ready on 
+   the chosen Connection, scroll down, 
+   turn off Auto-obtain DNS, 
+   and ensure the Primary DNS is set 
+   to your chosen DNS server, 
+   and Secondary DNS is all 0 or matching the Primary DNS.
+8) Save Settings, then test the connection. 
+   If all good, you now have access to 
+   Gen IV Internet features, such as Mystery Gift and the GTS!
+
+If testing the connection was unsuccesful, attempt to try and retreive a Mystery Gift. From my testing, the Nintendo WFC test ping can be unreliable at times, depending on how strong your PC Internet signal is.
+
+### Using the backend only
+
+If you wish to use IVnet without the frontend, you can run the backend direcly by running `bin/ivnetback` in your terminal, while in the IVnet folder.
+
+The backend takes 4 arguments:
+- The name of the Network Interface Device to use as an Access Point.
+  - You can check what your available NIDs are by running `sudo ls /sys/class/net/`
+- The DNS server to connect to.
+- Your country code (look for your code in 'More Information' below).
+- A chosen SSID for the Access Point.
+  - **Only by running the backend can you make a custom SSID**. This will be the name that shows up on the Nintendo WFC Access Point search results.
 
 ## Hardware guide
 ### External Network Interface Devices
-I recommend using an external NID as the Access Point for IVnet, as it is less likely to pose a risk to your systems built-in network devices. <br><br>
-In my testing and usage, I have been using an [**AR9271 USB WiFi Adapter**](https://www.amazon.co.uk/dp/B0BRG6587D?ref=ppx_yo2ov_dt_b_fed_asin_title). The Linux kernel supports it natively and I have had no issues with it. <br><br>
+I recommend using an external NID as the Access Point for IVnet, as it is less likely to pose a risk to your systems built-in network devices. <br>
+In my testing and usage, I have been using an [**AR9271 USB WiFi Adapter**](https://www.amazon.co.uk/dp/B0BRG6587D?ref=ppx_yo2ov_dt_b_fed_asin_title). The Linux kernel supports it natively and I have had no issues with it.
+
 It would be, again, greatly appreciated if information on how other external NIDs work with IVnet could be collected, to display here for all to see.<br>
 From my own research, the device must be capable of the following:
 - 2.4 GHz Wifi **only**.
@@ -40,13 +109,17 @@ The list above on required capabilities should also apply for a built-in NIC.
 
 ## More information
 ### Background
-I started IVnet because, before the program was made, the only way you can connect the generation IV games to custom servers, feasably, was by using either an old router that only supported WEP WiFi encryption (which the DS supports, unlike the newer WPA protocols), or an unsecure mobile hotspot with something like an Android. <br><br>
-I had neither, and after hearing about and watching MattKC's work on [Vanilla](https://github.com/vanilla-wiiu/vanilla), I decided to learn how to use a USB WiFi adapter to connect to the Internet. I am proud to say that it works!<br><br>
-On the backend, the main programs running are [hostapd](), which deals with turning the NID into an Access Point, and [dnsmasq](), which turns the NID into a DHCP server, thus allowing it to assign IP addresses to connecting systems, like the Nintendo DS, and rerouting traffic to a specified DNS server. It also allows for a custom SSID to be used.<br><br>
+I started IVnet because, before the program was made, the only way you can connect the generation IV games to custom servers, feasably, was by using either an old router that only supported WEP WiFi encryption (which the DS supports, unlike the newer WPA protocols), or an unsecure mobile hotspot with something like an Android.
+
+I had neither, and after hearing about and watching MattKC's work on [Vanilla](https://github.com/vanilla-wiiu/vanilla), I decided to learn how to use a USB WiFi adapter to connect to the Internet. I am proud to say that it works!
+
+On the backend, the main programs running are [hostapd](https://wireless.docs.kernel.org/en/latest/en/users/documentation/hostapd.html), which deals with turning the NID into an Access Point, and [dnsmasq](https://wiki.archlinux.org/title/Dnsmasq), which turns the NID into a DHCP server, thus allowing it to assign IP addresses to connecting systems, like the Nintendo DS, and rerouting traffic to a specified DNS server. It also allows for a custom SSID to be used.
+
 Due to this being an unsecure Access Point, **ensure the Access Point is up only for as long as needed**. A timer of 3 hours is set by default to time out the AP.
 
 ### ISO 3166-1 alpha-2 codes
-IVnet requires that you configure your "country code" AKA your ISO 3166-1 alpha-2 national code. This is to ensure that the programs ran by IVnet (specifically hostapd) are compliant with your country's WiFi laws and regulations. <br><br>
+IVnet requires that you configure your "country code" AKA your ISO 3166-1 alpha-2 national code. This is to ensure that the programs ran by IVnet (specifically hostapd) are compliant with your country's WiFi laws and regulations.
+
 All of the country codes can be found [here](https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2).
 
 ### What's next?
@@ -54,86 +127,11 @@ All of the country codes can be found [here](https://en.wikipedia.org/wiki/ISO_3
 - Work on and test ports to Linux Virtual Machines and WSL.
 - Work on potential bugs that may crop up.
 - Work on list of compatible Network Interface Devices.
-- Improve the frontend visually, such as adding a background image.
+- Improve the frontend visually, such as adding a background image and hyperlinks.
 - Expanding the user-set configuration options, if needed. 
 
+Furthermore, discussions are set up to contribute any information on both hardware and software compatibility and bugs, to improve IVnet further.
 
+All in all, I hope you enjoy using IVnet!
 
-
-# Markdown syntax guide
-
-## Headers
-
-# This is a Heading h1
-## This is a Heading h2
-###### This is a Heading h6
-
-## Emphasis
-
-*This text will be italic*  
-_This will also be italic_
-
-**This text will be bold**  
-__This will also be bold__
-
-_You **can** combine them_
-
-## Lists
-
-### Unordered
-
-* Item 1
-* Item 2
-* Item 2a
-* Item 2b
-    * Item 3a
-    * Item 3b
-
-### Ordered
-
-1. Item 1
-2. Item 2
-3. Item 3
-    1. Item 3a
-    2. Item 3b
-
-## Images
-
-![This is an alt text.](/image/Markdown-mark.svg "This is a sample image.")
-
-## Links
-
-You may be using [Markdown Live Preview](https://markdownlivepreview.com/).
-
-## Blockquotes
-
-> Markdown is a lightweight markup language with plain-text-formatting syntax, created in 2004 by John Gruber with Aaron Swartz.
->
->> Markdown is often used to format readme files, for writing messages in online discussion forums, and to create rich text using a plain text editor.
-
-## Tables
-
-| Left columns  | Right columns |
-| ------------- |:-------------:|
-| left foo      | right foo     |
-| left bar      | right bar     |
-| left baz      | right baz     |
-
-## Blocks of code
-
-```
-let message = 'Hello world';
-alert(message);
-```
-
-## Mermaid diagrams
-```mermaid
-graph TD
-  A[Start] --> B{Decision}
-  B -->|Yes| C[Finish]
-  B -->|No| D[Alternate]
-```
-
-## Inline code
-
-This web site is using `markedjs/marked`.
+-vixthevix, a Human from Earth.
