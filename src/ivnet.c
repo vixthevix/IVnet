@@ -90,7 +90,7 @@ Frees memory held by Sprite.
 @return free status.
 */
 bool freeSprite(Sprite* sprite) {
-    if (!sprite) return false;
+	if (!sprite) return false;
     if (!(sprite->data)) {
         free(sprite);
         return true;
@@ -99,8 +99,8 @@ bool freeSprite(Sprite* sprite) {
     switch (sprite->type) {
         case IMAGE: {
             Texture2D* data = (Texture2D*)sprite->data;
-            UnloadTexture(*data);
-            break;
+	    UnloadTexture(*data);
+	    break;
         }
         case TEXT: {
             char** data = (char**)sprite->data;
@@ -419,7 +419,7 @@ bool freeScene(Scene* scene) {
 
     for (uint32_t i = 0; i < scene->len; i++) {
         bool status = freeSprite(scene->sprites[i]);
-        if (!status) printf("Could not free sprite #%u of current scene\n", i);
+        //if (!status) printf("Could not free sprite #%u of current scene\n", i);
     }
 
     free(scene->sprites);
@@ -1008,7 +1008,7 @@ int main() {
             int bytes_read = read(pipefd[0], buffer, sizeof(buffer));
             //the format is "status:message"
             if (bytes_read > 0) {
-                if (buffer[0] == '1') {
+                if ((strncmp(buffer, "IVnet:1", strlen("IVnet:1")) == 0)) {
                     perror("Backend success!\n");
                     //updated connection info
                     char connection_info_string[512] = {0};
@@ -1020,9 +1020,9 @@ int main() {
                     
                     cur_scene = connection_menu;
                 }
-                else if (buffer[0] == '0') {
+                else if ((strncmp(buffer, "IVnet:0", strlen("IVnet:0")) == 0)) {
                     perror("Backend returned an error.\n");
-                    sprintf(error_message, "Error:%s", &buffer[2]);
+                    sprintf(error_message, "Error:%s", &buffer[strlen("IVnet:0:")]);
                     textUpdate(main_error, error_message);
                     
                     cur_scene = main_menu;
@@ -1065,9 +1065,9 @@ int main() {
             //the format is "status:message"
             if (bytes_read > 0) {
                 //at this point, if we get any kind of message, its a bad sign.
-                if (buffer[0] == '0') {
+                if (strncmp(buffer, "IVnet:0", strlen("IVnet:0")) == 0) {
                     printf("backend ended things on its own terms.\n");
-                    sprintf(error_message, "Error:%s", &buffer[2]);
+                    sprintf(error_message, "Error:%s", &buffer[strlen("IVnet:0:")]);
                     textUpdate(main_error, error_message);
                     goto connection_close;
                 }
@@ -1150,7 +1150,6 @@ int main() {
         EndDrawing();
     }
     UnloadFont(font);
-    CloseWindow();
     
     //cleanup
     freeScene(main_menu);
@@ -1162,7 +1161,9 @@ int main() {
     freeScene(dns_menu);
     freeScene(loading_menu);
     freeScene(connection_menu);
+    
     cur_scene = NULL;
+    CloseWindow();
 
     return 0;
 }

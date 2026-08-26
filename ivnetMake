@@ -24,4 +24,4 @@ fi
 printf "\nIVnet successfully compiled!\nRun 'bash ivnetRun' or 'bin/ivnet' to begin\n"
 printf "To run just the backend, run 'bin/ivnetback'\n"
 
-bin/ivnet
+
