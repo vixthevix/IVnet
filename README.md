@@ -23,12 +23,10 @@ Before you can compile IVnet, run:
 
 **Installing [raylib](https://github.com/raysan5/raylib)**:
 
-IVnet uses raylib as its frontend, so ensure that it is cloned and built in the `src` folder.
+IVnet uses raylib as its frontend, so ensure that it is installed on your system.
 
 For building statically with make:
 ```
-#In the IVnet folder
-cd src
 git clone https://github.com/raysan5/raylib.git
 cd raylib/src
 make PLATFORM=PLATFORM_DESKTOP

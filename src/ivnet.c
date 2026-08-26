@@ -5,7 +5,7 @@ Linux program for connecting the generation IV Pokemon games to the internet.
 Visit https://github.com/vixthevix/IVnet for more info.
 */
 
-#include "raylib/src/raylib.h"
+#include <raylib.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
