@@ -73,7 +73,8 @@ Once this is done:
    If all good, you now have access to 
    Gen IV Internet features, such as Mystery Gift and the GTS!
 
-If testing the connection was unsuccesful, attempt to try and retreive a Mystery Gift. From my testing, the Nintendo WFC test ping can be unreliable at times, depending on how strong your PC Internet signal is.
+Please note that the DS's connection strength to the servers depends on your PC's own Internet connection strength.<br>
+Additionally, some extra steps may be required to fully connect to the servers, depending on where you live. Look in 'More information' for this.
 
 ### Using the backend only
 
@@ -119,6 +120,13 @@ Due to this being an unsecure Access Point, **ensure the Access Point is up only
 IVnet requires that you configure your "country code" AKA your ISO 3166-1 alpha-2 national code. This is to ensure that the programs ran by IVnet (specifically hostapd) are compliant with your country's WiFi laws and regulations.
 
 All of the country codes can be found [here](https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2).
+
+### Extra steps
+Depending on where you live in the world and what your country code may be, you may need to tweak your local WiFi settings to accommodate for this (if your main Internet connection is via Ethernet, this shouldn't be an issue, maybe).
+
+For instance, as a UK resident, I had to manually change my router's DNS routing (to 8.8.8.8 for Google's services, for instance), due to UK rules on Internet providers changing DNS targeted packet destinations to their own servers; this would result in packets being sent to the official Nintendo servers, which are of course discontinued.
+
+For more information on what to do for your specific circumstance, I recommend for now researching online on how to set your WiFi settings right for IVnet to work properly; with enough support, this information could also be available on this repository at some point in the future.
 
 ### What's next?
 
