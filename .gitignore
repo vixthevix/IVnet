@@ -4,3 +4,6 @@ bin
 teto_dance.gif
 config
 IVnet.conf
+
+#ignore mystery gift decoding folder
+IVnetCustomGift
