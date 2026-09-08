@@ -458,10 +458,12 @@ bool updateNIC(char nic_list[256][75], uint32_t* nic_count) {
 Struct to hold user saved information for all sessions.
 In the format:
     country_code -> stores IEEE 802.11d code 
+    localhost -> stores if IVnet can perform local server hosting.
     END
 */
 typedef struct Config {
     char country_code[3];
+    bool localhost;
 } Config;
 
 /*
@@ -479,7 +481,7 @@ Config generateConfig(const char* path) {
         file = fopen(path, "w");
         if (!file) return config;
         fclose(file);
-        //if created, go back to reading it.
+        //open file for file reading
         file = fopen(path, "r");
         if (!file) return config;
     }
@@ -488,7 +490,7 @@ Config generateConfig(const char* path) {
     int line = 0;
     char buffer[100] = {0};
     while ((fgets(buffer, sizeof(buffer), file)) != NULL) {
-        if (buffer[strlen(buffer)] == '\n') buffer[strlen(buffer)] = 0; //remove newline
+        if (buffer[strlen(buffer) - 1] == '\n') buffer[strlen(buffer) - 1] = 0; //remove newline
         if (line == 0) { // Country Code
             strcpy(config.country_code, buffer);
         }
@@ -511,9 +513,23 @@ bool saveConfig(Config config, const char* path) {
     if (!file) return false;
 
     //build up a buffer and write it
-    fprintf(file, "%s", config.country_code);
+    fprintf(file, "%s", 
+        config.country_code
+    );
     fclose(file);
 
+    return true;
+}
+
+/*
+Writes Config to visual text.
+@arg config -> current Config data.
+@arg buffer -> target to write to.
+@return status of write.
+*/
+bool updateConfigText(Config config, char* buffer) {
+    if (!buffer) return false;
+    snprintf(buffer, 100, "CURRENT CONFIG\n\nCOUNTRY CODE: %s\n\nLOCALHOST: %s", config.country_code, config.localhost ? "TRUE":"FALSE");
     return true;
 }
 
@@ -528,6 +544,12 @@ int main() {
     char* text = NULL;
 
     Config config = generateConfig(config_path);
+    //Check for localhost
+    #if defined(ENABLE_LOCALHOST)
+    config.localhost = true;
+    #else
+    config.localhost = false;
+    #endif
 
     //IPC set up
     pid_t back_p = 0; //backend fd
@@ -615,7 +637,7 @@ int main() {
     
     Sprite* config_logo = newSprite(IMAGE, "assets/img/config_logo.png", 125, 0, IMAGE_SIZE_NATIVE, WHITE);
     Sprite* config_return = newSprite(IMAGE, "assets/img/return.png", 1, 1, 50, 50, WHITE);
-    Sprite* config_info = newSprite(TEXT, " ", 250, 200, TEXT_SIZE(20), BLACK); 
+    Sprite* config_info = newSprite(TEXT, "", 250, 200, TEXT_SIZE(20), BLACK); 
 
     //contains buttons for selecting which config to choose.
     Sprite* config_country_select = newSprite(IMAGE, "assets/img/config_country_select.png", 75, 150, 150, 150, WHITE);
@@ -681,6 +703,7 @@ int main() {
     char* dns_list[] = {
         "178.62.43.212 - PokeClassicNetwork",
         "167.235.229.36 - PCN Backup",
+        "0.0.0.0 - Local Host"
     };
     uint32_t dns_count = sizeof(dns_list) / sizeof(dns_list[0]);
     uint32_t dns_index = 0;
@@ -758,7 +781,7 @@ int main() {
                 textUpdate(main_error, " ");
                 //update the config info
                 char config_info_buffer[100] = {0};
-                sprintf(config_info_buffer, "CURRENT CONFIG:\n\nCOUNTRY CODE: %s", config.country_code);
+                updateConfigText(config, config_info_buffer);
                 textUpdate(config_info, config_info_buffer);
                 cur_scene = config_menu;
             }
@@ -921,6 +944,13 @@ int main() {
                     }
 
                     strncpy(chosen_dns, choice, dash_index);
+
+                    //Ensure that we can localhost.
+                    if (strcmp(chosen_dns, "0.0.0.0") == 0 && !config.localhost) {
+                        textUpdate(main_error, "Error: ENABLE_LOCALHOST comp flag not set.");
+                        cur_scene = main_menu;
+                        goto screen_display;
+                    }
                     
                     //with a chosen NID and DNS, we can start the backend
 
@@ -1008,10 +1038,21 @@ int main() {
             int bytes_read = read(pipefd[0], buffer, sizeof(buffer));
             //the format is "status:message"
             if (bytes_read > 0) {
-                if ((strncmp(buffer, "IVnet:1", strlen("IVnet:1")) == 0)) {
+                if ((strncmp(buffer, "IVnet:DNS", strlen("IVnet:DNS")) == 0)) {
+                    //special communication case, we retrieve the DNS.
+                    char* temp_dns = buffer + strlen("IVnet:DNS:");
+                    temp_dns[strlen(temp_dns) - 1] = 0; //remove trailing \n
+                    fprintf(stderr, "Got DNS from backend:%s\n", temp_dns);
+                    memset(chosen_dns, 0, 75);
+                    sprintf(chosen_dns, temp_dns);
+                }
+                else if ((strncmp(buffer, "IVnet:1", strlen("IVnet:1")) == 0)) {
                     perror("Backend success!\n");
                     //updated connection info
                     char connection_info_string[512] = {0};
+
+
+
                     sprintf(connection_info_string, "You can now connect your DS!\nPrimary DNS:%s\nSSID:%s", chosen_dns, SSID);
                     textUpdate(connection_info, connection_info_string);
                     
@@ -1135,7 +1176,7 @@ int main() {
                     saveConfig(config, config_path);
                     
                     char config_info_buffer[100] = {0};
-                    sprintf(config_info_buffer, "CURRENT CONFIG:\n\nCOUNTRY CODE: %s", config.country_code);
+                    updateConfigText(config, config_info_buffer);
                     textUpdate(config_info, config_info_buffer);
                     
                     cur_scene = config_menu;
@@ -1164,6 +1205,9 @@ int main() {
     
     cur_scene = NULL;
     CloseWindow();
+
+    //Save our current config as well, just in case.
+    saveConfig(config, config_path);
 
     return 0;
 }

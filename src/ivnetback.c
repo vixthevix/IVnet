@@ -5,6 +5,9 @@ Linux program for connecting the generation IV Pokemon games to the internet.
 Visit https://github.com/vixthevix/IVnet for more info.
 */
 
+#define COTTAGE_START
+#include "cottage/cottage.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +28,7 @@ Visit https://github.com/vixthevix/IVnet for more info.
 #include <sys/prctl.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <poll.h>
 
 
 //Signal data for proper process-end cleanup
@@ -100,6 +104,10 @@ The role of the backend is to:
     Clean up and restore the NID once complete.
 */
 int main(int argc, char** argv) {
+
+    //Enable cottage
+    cottageInit();
+
     //disable line buffering for printf messaging to work
     setvbuf(stdout, NULL, _IOLBF, 0);
 
@@ -190,7 +198,26 @@ int main(int argc, char** argv) {
         printf("IVnet:0:DNS invalid\n");
         return 1;
     }
+
+
+
+    //Are we hosting locally?
+    bool localhost_comp = false;
+    #if defined(ENABLE_LOCALHOST)
+    localhost_comp = true;
+    #endif
+
+    bool localhost = strcmp(DNS, "0.0.0.0") == 0;
+    const char* port_http = "8080";
+    const char* port_https = "8443";
+
+    if (localhost && !localhost_comp) {
+        printf("IVnet:0:ENABLE_LOCALHOST comp flag not set.");
+        return 1;
+    }
     
+
+
     //verify countrycode
     //must be 2 characters long, and be in all caps
     if (!country_code) {
@@ -285,7 +312,13 @@ int main(int argc, char** argv) {
         printf("IVnet:0:ip collision, error\n");
         return 1;
     }
-    
+
+
+    //Update the frontend with the new selected DNS, due to localhost.
+    if (localhost) printf("IVnet:DNS:%u.%u.%u.%u\n", dongle_ip[0], dongle_ip[1], dongle_ip[2], dongle_ip[3]);
+    else printf("IVnet:DNS:%s\n", DNS);
+
+
     //Temporarily remove current WiFi setup of dongle,
     //and replace it as an acces point.
 
@@ -396,12 +429,19 @@ int main(int argc, char** argv) {
     //dnsmasq is a program that, for our purposes, will allow the dongle to hand out ip addresses to connected devices to be recognised for communication, such as the Nintendo DS.
     //to be running for 3 hours only.
     //hands out ip address in the range 10 to 50, so a max of 40 Devices can connect at once.
-    const char* dnsmasq_contents = 
+    const char* dnsmasq_contents_foreign = 
     "port=0\n"
     "interface=%1$s\n" //dongle name
     "bind-interfaces\n"
     "dhcp-range=%2$u.%3$u.%4$u.10,%2$u.%3$u.%4$u.50,3h\n" //dongle access point range and timer
     "dhcp-option=6,%5$s\n"; //DNS
+
+    const char* dnsmasq_contents_local = 
+    "interface=%1$s\n" //dongle name
+    "bind-interfaces\n"
+    "dhcp-range=%2$u.%3$u.%4$u.10,%2$u.%3$u.%4$u.50,3h\n" //dongle access point range and timer
+    "dhcp-option=6,%2$u.%3$u.%4$u.%5$u\n" //DNS
+    "address=/#/%2$u.%3$u.%4$u.%5$u\n"; //spoofing rule: intercept every request to the server
 
     //Write out the config files
     FILE* hostapd = fopen("/tmp/ivnet/hostapd.conf", "w");
@@ -416,7 +456,8 @@ int main(int argc, char** argv) {
         printf("IVnet:0:could not open dnsmasq.conf\n");
         return 1;
     }
-    fprintf(dnsmasq, dnsmasq_contents, dongle_new, dongle_ip[0], dongle_ip[1], dongle_ip[2], DNS);
+    if (localhost) fprintf(dnsmasq, dnsmasq_contents_local, dongle_new, dongle_ip[0], dongle_ip[1], dongle_ip[2], dongle_ip[3]);
+    else fprintf(dnsmasq, dnsmasq_contents_foreign, dongle_new, dongle_ip[0], dongle_ip[1], dongle_ip[2], DNS);
     fclose(dnsmasq);
 
     //ip_forward is a parameter file that turns your Linux computer into a router
@@ -432,9 +473,20 @@ int main(int argc, char** argv) {
     //iptables works with multiple tables, we are using the nat table, which means "network address translation" ie. port forwarding
     //each table has a set of rules to follow called chains. We are going to follow the POSTROUTING chain within nat, which deals with altering outgoing packets from the local network
     //the MASQUERADE jump option tells us that "if we get a matching valid packet, set the source address to the router connected to the internet", to allow for outgoing packets
-    char traffic_rule[100] = {0};
-    sprintf(traffic_rule, "iptables -t nat -A POSTROUTING -j MASQUERADE");
-    system(traffic_rule);
+    sprintf(cmd, "iptables -t nat -A POSTROUTING -j MASQUERADE");
+    system(cmd);
+
+    if (localhost) {
+        //we have to redirect all traffic to port 8080 for localhost.
+        
+        //HTTP requests
+        sprintf(cmd, "iptables -t nat -A PREROUTING -i %s -p tcp --dport 80 -j REDIRECT --to-port %s", dongle_new, port_http);
+        system(cmd);
+        //HTTPS requests
+        //sprintf(cmd, "iptables -t nat -A PREROUTING -i %s -p tcp --dport 443 -j REDIRECT --to-port %s", dongle_new, port_https);
+        //system(cmd);
+    }
+
 
     //Create the hostapd and dnsmasq child proceses
     pid_t hostapd_p = 0, dnsmasq_p = 0;
@@ -504,27 +556,96 @@ int main(int argc, char** argv) {
     //If child processes did not fail to start, we're golden.
     printf("IVnet:1:Success!\n");
 
-    //We wait for either a termination signal (running)
-    //Or for the frontend to close the signal pipe
-    char wait_buffer;
-    while (running && read(STDIN_FILENO, &wait_buffer, 1) > 0) {
-        //check if dnsmasq or hostapd have failed
-        //kill command can check status of process when signal is 0
-        if (kill(hostapd_p, 0) != 0) {
-            if (errno == ESRCH) {
-                printf("IVnet:0:hostapd terminated early\n");
-                break;
+    ServerConfig* server = NULL;
+    if (localhost) {
+        //We need an IP address and port. for now we are sticking to HTTP only.
+        char address[50] = {0};
+        sprintf(address, "%u.%u.%u.%u", dongle_ip[0], dongle_ip[1], dongle_ip[2], dongle_ip[3]);
+
+        const int client_max = 64; //64 systems should be good.
+
+        server = serverInit(address, port_http, client_max);
+        if (!server) {
+            goto cleanup;   
+        }
+        
+        // if (!applyNonBlocking(STDIN_FILENO)) {
+        //     goto cleanup;
+        // }
+        char wait_buffer;
+        while (running) {
+            //Because we are running a server, we have to have non-blocking checks for frontend connection status.
+            struct pollfd stdin_state = {.fd = STDIN_FILENO, .events=POLLIN};
+            if (poll(&stdin_state, 1, 0) > 0) { //last parameter is timeout. 0 means insant.
+                if (read(STDIN_FILENO, &wait_buffer, 1) <= 0) break;
+            }
+
+            int ready_count = CotPollPoll(server->poll);
+            for (int i = 0; i < ready_count; i++) {
+                int cur_fd = CotPollAccess(server->poll, i);
+                if (cur_fd == server->server_fd) {
+                    //new client
+                    int client_fd = serverAcceptClient(server);
+                    if (client_fd < 0) continue;
+                    CotPollPush(server->poll, client_fd); 
+                }
+                else {
+                    //existing client
+                    char* clientOffload = serverRecvClient(cur_fd);
+                    HttpRequest request;
+                    if (splitHttpRequest(&request, clientOffload).status == COT_ERROR) {
+                        fprintf(stderr, "Could not split HTTP request\n");
+                        //goto cleanup;
+                    }
+                    fprintf(stderr, "DS REQUEST:\n%s\n", clientOffload);
+
+                    HttpRequestFree(request);
+                    if (clientOffload) free(clientOffload);
+                }
+            }
+            
+            //check if dnsmasq or hostapd have failed
+            //kill command can check status of process when signal is 0
+            if (kill(hostapd_p, 0) != 0) {
+                if (errno == ESRCH) {
+                    printf("IVnet:0:hostapd terminated early\n");
+                    break;
+                }
+            }
+            if (kill(dnsmasq_p, 0) != 0) {
+                if (errno == ESRCH) {
+                    printf("IVnet:0:dnsmasq terminated early\n");
+                    break;
+                }
             }
         }
-        if (kill(dnsmasq_p, 0) != 0) {
-            if (errno == ESRCH) {
-                printf("IVnet:0:dnsmasq terminated early\n");
-                break;
+
+    }
+    else {
+        //We wait for either a termination signal (running)
+        //Or for the frontend to close the signal pipe
+        char wait_buffer;
+        while (running && read(STDIN_FILENO, &wait_buffer, 1) > 0) {
+            //check if dnsmasq or hostapd have failed
+            //kill command can check status of process when signal is 0
+            if (kill(hostapd_p, 0) != 0) {
+                if (errno == ESRCH) {
+                    printf("IVnet:0:hostapd terminated early\n");
+                    break;
+                }
+            }
+            if (kill(dnsmasq_p, 0) != 0) {
+                if (errno == ESRCH) {
+                    printf("IVnet:0:dnsmasq terminated early\n");
+                    break;
+                }
             }
         }
     }
 
+    cleanup:
     perror("Killing backend...\n"); 
+    serverClose(server);
 
     kill(hostapd_p, SIGKILL);
     kill(dnsmasq_p, SIGKILL);
@@ -532,6 +653,14 @@ int main(int argc, char** argv) {
     //Disable iproutes outgoing traffic
     sprintf(cmd, "iptables -t nat -D POSTROUTING -j MASQUERADE");
     system(cmd);
+
+    if (localhost) {
+        //Stop rerouting to HTTP (and HTTPS) ports
+        sprintf(cmd, "iptables -t nat -D PREROUTING -i %s -p tcp --dport 80 -j REDIRECT --to-port %s", dongle_new, port_http);
+        system(cmd);
+        //sprintf(cmd, "iptables -t nat -D PREROUTING -i %s -p tcp --dport 443 -j REDIRECT --to-port %s", dongle_new, port_https);
+        //system(cmd);
+    }
 
     //revert ip_forward
     ip_forward = fopen("/proc/sys/net/ipv4/ip_forward", "w");

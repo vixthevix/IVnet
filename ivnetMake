@@ -3,25 +3,48 @@
 
 mkdir bin
 
-gcc src/ivnetback.c -o bin/ivnetback
-success=$?
+# Check if we want localhost features as well.
 
+if [[ -z "${ENABLE_LOCALHOST}" ]]; then # No localhost
+    printf "Compiling normally...\n"
 
-if [ $success -ne 0 ]; then
-    printf "\nCould not compile backend\n"
-    exit
-fi
+    gcc src/ivnetback.c -o bin/ivnetback -lm
+    success=$?
 
-gcc src/ivnet.c -o bin/ivnet -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
-success=$?
+    if [ $success -ne 0 ]; then
+        printf "\nCould not compile backend\n"
+        exit
+    fi
 
+    gcc src/ivnet.c -o bin/ivnet -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
+    success=$?
 
-if [ $success -ne 0 ]; then
-    printf "\nCould not compile frontend\n"
-    exit
+    if [ $success -ne 0 ]; then
+        printf "\nCould not compile frontend\n"
+        exit
+    fi
+else
+    printf "Compiling with local server functionality...\n"    
+    #wget https://github.com/openssl/openssl/releases/download/openssl-3.0.22/openssl-3.0.22.tar.gz
+    #tar -xzf openssl-3.0.22.tar.gz
+    #cd openssl-3.0.22 && ./Configure enable-ssl3 enable-ssl3-method enable-weak-ssl-ciphers no-shared && make
+
+    # gcc src/ivnetback.c ./openssl-3.0.22/libssl.a ./openssl-3.0.22/libcrypto.a -o bin/ivnetback -D ENABLE_LOCALHOST -I./openssl-3.0.22/include -lm -lpthread -ldl
+    # success=$?
+
+    # if [ $success -ne 0 ]; then
+    #     printf "\nCould not compile backend\n"
+    #     exit
+    # fi
+
+    gcc src/ivnet.c -o bin/ivnet -D ENABLE_LOCALHOST -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
+    success=$?
+
+    if [ $success -ne 0 ]; then
+        printf "\nCould not compile frontend\n"
+        exit
+    fi
 fi
 
 printf "\nIVnet successfully compiled!\nRun 'bash ivnetRun' or 'bin/ivnet' to begin\n"
 printf "To run just the backend, run 'bin/ivnetback'\n"
-
-

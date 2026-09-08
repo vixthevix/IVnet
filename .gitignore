@@ -7,3 +7,18 @@ IVnet.conf
 
 #ignore mystery gift decoding folder
 IVnetCustomGift
+
+#ignore nintendo certificates and keys
+*.crt
+*.key
+*.pem
+
+#ignore server emulator python code (target of research)
+dwc_network_server_emulator
+
+#openssl libraries
+openssl*
+
+#notes file
+notes.txt
+
