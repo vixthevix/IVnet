@@ -5,8 +5,8 @@ Linux program for connecting the generation IV Pokemon games to the internet.
 Visit https://github.com/vixthevix/IVnet for more info.
 */
 
-#define COTTAGE_START
-#include "cottage/cottage.h"
+// #include <openssl/evp.h>
+// #include <openssl/prov_ssl.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,6 +30,14 @@ Visit https://github.com/vixthevix/IVnet for more info.
 #include <errno.h>
 #include <poll.h>
 
+//OpenSSL 3.0 libraries and cottage
+#if defined(ENABLE_LOCALHOST)
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+
+#define COTTAGE_START
+#include "cottage/cottage.h"
+#endif
 
 //Signal data for proper process-end cleanup
 volatile sig_atomic_t running = 1;
@@ -93,6 +101,157 @@ void freeIpCandidates(IpCandidate* head) {
     free(head);
 }
 
+#if defined(ENABLE_LOCALHOST)
+/*
+Creates the certificate chain file needed for initialising a local server.
+@arg cert_path -> path to certificate.
+@arg key_path -> path to key.
+@return status of create.
+*/
+bool createLocalChain(const char* cert_path, const char* key_path) {
+    //Files needed for chain creation
+    const char* server_key = "/tmp/ivnet/server.key";
+    const char* server_csr = "/tmp/ivnet/server.csr";
+    const char* server_crt = "/tmp/ivnet/server.crt";
+    const char* server_chain = "/tmp/ivnet/server.chain.crt";
+
+    const char* csr_info = "\"/CN=nas.nintendowifi.net/O=Nintendo/C=JP\"";
+    
+    //Command buffer
+    char cmd[1024] = {0};
+
+    //Local server private key
+    sprintf(cmd, "openssl genrsa -out %s 2048 1>/dev/null", server_key);
+    system(cmd);
+
+    //Certificate Signing Request (contains data for the DS to verify)
+    sprintf(cmd,
+        "openssl req -new -key %s -out %s -subj %s 1>/dev/null",
+        server_key, server_csr, csr_info
+    );
+    system(cmd);
+
+    //Server certificate, signed with function arguments.
+    sprintf(cmd,
+        "openssl x509 -req -in %s -CA %s -CAkey %s -CAcreateserial -out %s -days 3650 1>/dev/null",
+        server_csr, cert_path, key_path, server_crt
+    );
+    system(cmd);
+
+    //Create certificate chain file
+    sprintf(cmd, "cat %s %s > %s", server_crt, cert_path, server_chain);
+    system(cmd);
+
+    return true;
+}
+
+/*
+Removes the temporary files used for chain creation.
+*/
+void cleanLocalChain(void) {
+    const char* server_key = "/tmp/ivnet/server.key";
+    const char* server_csr = "/tmp/ivnet/server.csr";
+    const char* server_crt = "/tmp/ivnet/server.crt";
+    const char* server_chain = "/tmp/ivnet/server.chain.crt";
+
+    //Command buffer
+    char cmd[1024] = {0};
+
+    sprintf(cmd, "rm %s %s %s %s", server_key, server_csr, server_crt, server_chain);
+    system(cmd);
+}
+
+/*
+Manages an IVnet HTTP local server.
+@arg server -> HTTP ServerConfig to manage.
+*/
+void HTTP_manage(ServerConfig* server, int timeout) {
+    int ready_count = CotPollPoll(server->poll, timeout);
+    for (int i = 0; i < ready_count; i++) {
+        int cur_fd = CotPollAccess(server->poll, i);
+        if (cur_fd == server->server_fd) {
+            //new client
+            int client_fd = serverAcceptClient(server);
+            if (client_fd < 0) continue;
+            CotPollPush(server->poll, client_fd); 
+        }
+        else {
+            //existing client
+            char* client_offload = serverRecvClient(cur_fd);
+            HttpRequest request;
+            if (splitHttpRequest(&request, client_offload).status == COT_ERROR) {
+                fprintf(stderr, "Could not split HTTP request\n");
+                //goto cleanup;
+            }
+            fprintf(stderr, "DS REQUEST:\n%s\n", client_offload);
+
+            if (HttpRequestValid(request) && request.type == GET) {
+                //Assuming its the connection test, send a default response.
+                HttpResponse response;
+                HttpResponseInit(&response, request.version, HttpStatus_OK);
+                
+                strMapInsert(&response.options, "Content-type", "text/html");
+                strMapInsert(&response.options, "X-Organization", "Nintendo");
+                strMapInsert(&response.options, "Server", "BigIp");
+                strMapInsert(&response.options, "Content-length", "2");
+                
+                response.payload = (char*) calloc(3, sizeof(char));
+                strcpy(response.payload, "ok");
+
+                sendCustom(response, cur_fd);
+            }
+
+            HttpRequestFree(request);
+            if (client_offload) free(client_offload);
+            CotPollPop(server->poll, cur_fd);
+            serverCloseClient(cur_fd);
+        }
+    }
+}
+
+/*
+Manages an IVnet HTTPS local server.
+@arg server -> HTTPS ServerConfig to manage.
+*/
+void HTTPS_manage(ServerConfig* server, int timeout, SSL_CTX* ctx) {
+    int ready_count = CotPollPoll(server->poll, timeout);
+    for (int i = 0; i < ready_count; i++) {
+        int cur_fd = CotPollAccess(server->poll, i);
+        if (cur_fd == server->server_fd) {
+            //new client
+            int client_fd = serverAcceptClient(server);
+            if (client_fd < 0) continue;
+            CotPollPush(server->poll, client_fd); 
+        }
+        else {
+            //existing client
+
+            //Allow SSL to decrypt the message.
+            SSL* ssl = SSL_new(ctx);
+            SSL_set_fd(ssl, cur_fd); //attach our current client to SSL.
+
+            //Perform the TLS handshake
+            if (SSL_accept(ssl) <= 0) {
+                ERR_print_errors_fp(stderr);
+                fprintf(stderr, "HANDSHAKE FAILED\n");
+            }
+            else {
+                //We can now decrypt our NDS messages
+                char client_offload[2048] = {0}; 
+                int bytes = SSL_read(ssl, client_offload, sizeof(client_offload) - 1); //for null terminator
+                if (bytes > 0) fprintf(stderr, "DECRYPTED DS REQUEST:\n%s\n", client_offload);
+                else fprintf(stderr, "NO ENCRYPTED DS MESSAGE FOUND\n");
+            }
+
+            SSL_shutdown(ssl);
+            SSL_free(ssl);
+            CotPollPop(server->poll, cur_fd);
+            serverCloseClient(cur_fd);
+        }
+    }
+}
+#endif
+
 
 /*
 The role of the backend is to:
@@ -104,9 +263,10 @@ The role of the backend is to:
     Clean up and restore the NID once complete.
 */
 int main(int argc, char** argv) {
-
+    #if defined(ENABLE_LOCALHOST)
     //Enable cottage
     cottageInit();
+    #endif
 
     //disable line buffering for printf messaging to work
     setvbuf(stdout, NULL, _IOLBF, 0);
@@ -483,8 +643,8 @@ int main(int argc, char** argv) {
         sprintf(cmd, "iptables -t nat -A PREROUTING -i %s -p tcp --dport 80 -j REDIRECT --to-port %s", dongle_new, port_http);
         system(cmd);
         //HTTPS requests
-        //sprintf(cmd, "iptables -t nat -A PREROUTING -i %s -p tcp --dport 443 -j REDIRECT --to-port %s", dongle_new, port_https);
-        //system(cmd);
+        sprintf(cmd, "iptables -t nat -A PREROUTING -i %s -p tcp --dport 443 -j REDIRECT --to-port %s", dongle_new, port_https);
+        system(cmd);
     }
 
 
@@ -555,23 +715,82 @@ int main(int argc, char** argv) {
     
     //If child processes did not fail to start, we're golden.
     printf("IVnet:1:Success!\n");
+    
+    #if defined(ENABLE_LOCALHOST)
+    ServerConfig* server_http = NULL;
+    ServerConfig* server_https = NULL;
+    #endif
 
-    ServerConfig* server = NULL;
     if (localhost) {
-        //We need an IP address and port. for now we are sticking to HTTP only.
+        #if defined(ENABLE_LOCALHOST)
+        //We need an IP address and port.
         char address[50] = {0};
         sprintf(address, "%u.%u.%u.%u", dongle_ip[0], dongle_ip[1], dongle_ip[2], dongle_ip[3]);
 
         const int client_max = 64; //64 systems should be good.
 
-        server = serverInit(address, port_http, client_max);
-        if (!server) {
+        //Set up our servers
+        server_http = serverInit(address, port_http, client_max);
+        if (!server_http) {
+            printf("IVnet:0:could not set up cotttage HTTP server.");
             goto cleanup;   
         }
-        
-        // if (!applyNonBlocking(STDIN_FILENO)) {
-        //     goto cleanup;
-        // }
+        server_https = serverInit(address, port_https, client_max);
+        if (!server_https) {
+            printf("IVnet:0:could not set up cotttage HTTPS server.");
+            goto cleanup;   
+        }
+
+        //Set up OpenSSL
+        SSL_library_init();
+        OpenSSL_add_all_algorithms();
+        SSL_load_error_strings();
+
+        //SSL context
+        const SSL_METHOD* method = TLS_server_method();
+        SSL_CTX* ctx = SSL_CTX_new(method);
+        if (!ctx) {
+            ERR_print_errors_fp(stderr); //OpenSSL error handling
+            printf("IVnet:0:could not set up OpenSSL.");
+            goto cleanup;
+        }
+
+        //Drop security to accept SSLv3 (needed for DS)
+        SSL_CTX_set_security_level(ctx, 0);
+        //ONLY SSLv3
+        SSL_CTX_set_min_proto_version(ctx, SSL3_VERSION);
+        SSL_CTX_set_max_proto_version(ctx, SSL3_VERSION);
+        //Update cipher list to include older ciphers
+        SSL_CTX_set_cipher_list(ctx, "ALL:@SECLEVEL=0");
+        //For compatibility with possibly broken SSL implementations
+        SSL_CTX_set_options(ctx, SSL_OP_ALL);
+
+        //Create the chain file, using certificate and key.
+        //Should be passed in as arguments to ivnetback.
+        if (!createLocalChain("", "")) {
+            printf("IVnet:0:could not create files needed for localhost");
+            goto cleanup;
+        }
+
+        //Load chain file
+        if (SSL_CTX_use_certificate_chain_file(ctx, "/tmp/ivnet/server.chain.crt") <= 0) {
+            printf("IVnet:0:failed to load chain file");
+            goto cleanup;
+        }
+        //Load server private key
+        if (SSL_CTX_use_PrivateKey_file(ctx, "/tmp/ivnet/server.key", SSL_FILETYPE_PEM) <= 0) {
+            printf("IVnet:0:failed to load server private key");
+            goto cleanup;
+        }
+        //Verify server private key with certificate public key
+        if (!SSL_CTX_check_private_key(ctx)) {
+            printf("IVnet:0:could not verify private key");
+            goto cleanup;
+        }
+
+        //Success! We can now decrypt NDS messages.
+        cleanLocalChain();
+
         char wait_buffer;
         while (running) {
             //Because we are running a server, we have to have non-blocking checks for frontend connection status.
@@ -580,29 +799,10 @@ int main(int argc, char** argv) {
                 if (read(STDIN_FILENO, &wait_buffer, 1) <= 0) break;
             }
 
-            int ready_count = CotPollPoll(server->poll);
-            for (int i = 0; i < ready_count; i++) {
-                int cur_fd = CotPollAccess(server->poll, i);
-                if (cur_fd == server->server_fd) {
-                    //new client
-                    int client_fd = serverAcceptClient(server);
-                    if (client_fd < 0) continue;
-                    CotPollPush(server->poll, client_fd); 
-                }
-                else {
-                    //existing client
-                    char* clientOffload = serverRecvClient(cur_fd);
-                    HttpRequest request;
-                    if (splitHttpRequest(&request, clientOffload).status == COT_ERROR) {
-                        fprintf(stderr, "Could not split HTTP request\n");
-                        //goto cleanup;
-                    }
-                    fprintf(stderr, "DS REQUEST:\n%s\n", clientOffload);
-
-                    HttpRequestFree(request);
-                    if (clientOffload) free(clientOffload);
-                }
-            }
+            //Server polling
+            const int timeout = 100; //milliseconds
+            HTTP_manage(server_http, timeout);
+            HTTPS_manage(server_https, timeout, ctx);
             
             //check if dnsmasq or hostapd have failed
             //kill command can check status of process when signal is 0
@@ -619,7 +819,7 @@ int main(int argc, char** argv) {
                 }
             }
         }
-
+        #endif
     }
     else {
         //We wait for either a termination signal (running)
@@ -644,8 +844,12 @@ int main(int argc, char** argv) {
     }
 
     cleanup:
-    perror("Killing backend...\n"); 
-    serverClose(server);
+    perror("Killing backend...\n");
+    
+    #if defined(ENABLE_LOCALHOST)
+    serverClose(server_http);
+    serverClose(server_https);
+    #endif
 
     kill(hostapd_p, SIGKILL);
     kill(dnsmasq_p, SIGKILL);
@@ -658,8 +862,8 @@ int main(int argc, char** argv) {
         //Stop rerouting to HTTP (and HTTPS) ports
         sprintf(cmd, "iptables -t nat -D PREROUTING -i %s -p tcp --dport 80 -j REDIRECT --to-port %s", dongle_new, port_http);
         system(cmd);
-        //sprintf(cmd, "iptables -t nat -D PREROUTING -i %s -p tcp --dport 443 -j REDIRECT --to-port %s", dongle_new, port_https);
-        //system(cmd);
+        sprintf(cmd, "iptables -t nat -D PREROUTING -i %s -p tcp --dport 443 -j REDIRECT --to-port %s", dongle_new, port_https);
+        system(cmd);
     }
 
     //revert ip_forward

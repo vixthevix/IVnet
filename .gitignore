@@ -3,7 +3,7 @@ compile
 bin
 teto_dance.gif
 config
-IVnet.conf
+*.conf
 
 #ignore mystery gift decoding folder
 IVnetCustomGift
@@ -21,4 +21,7 @@ openssl*
 
 #notes file
 notes.txt
+
+private
+
 

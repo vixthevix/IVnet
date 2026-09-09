@@ -29,13 +29,13 @@ else
     #tar -xzf openssl-3.0.22.tar.gz
     #cd openssl-3.0.22 && ./Configure enable-ssl3 enable-ssl3-method enable-weak-ssl-ciphers no-shared && make
 
-    # gcc src/ivnetback.c ./openssl-3.0.22/libssl.a ./openssl-3.0.22/libcrypto.a -o bin/ivnetback -D ENABLE_LOCALHOST -I./openssl-3.0.22/include -lm -lpthread -ldl
-    # success=$?
+    gcc src/ivnetback.c ./openssl-3.0.22/libssl.a ./openssl-3.0.22/libcrypto.a -o bin/ivnetback -D ENABLE_LOCALHOST -I./openssl-3.0.22/include -lm -lpthread -ldl
+    success=$?
 
-    # if [ $success -ne 0 ]; then
-    #     printf "\nCould not compile backend\n"
-    #     exit
-    # fi
+    if [ $success -ne 0 ]; then
+        printf "\nCould not compile backend\n"
+        exit
+    fi
 
     gcc src/ivnet.c -o bin/ivnet -D ENABLE_LOCALHOST -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
     success=$?

@@ -419,7 +419,6 @@ bool freeScene(Scene* scene) {
 
     for (uint32_t i = 0; i < scene->len; i++) {
         bool status = freeSprite(scene->sprites[i]);
-        //if (!status) printf("Could not free sprite #%u of current scene\n", i);
     }
 
     free(scene->sprites);
