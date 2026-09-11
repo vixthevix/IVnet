@@ -29,7 +29,9 @@ else
     #tar -xzf openssl-3.0.22.tar.gz
     #cd openssl-3.0.22 && ./Configure enable-ssl3 enable-ssl3-method enable-weak-ssl-ciphers no-shared && make
 
-    gcc src/ivnetback.c ./openssl-3.0.22/libssl.a ./openssl-3.0.22/libcrypto.a -o bin/ivnetback -D ENABLE_LOCALHOST -I./openssl-3.0.22/include -lm -lpthread -ldl
+    #COPY AND PASTE FOR 1.1.1w
+
+    gcc -I./openssl-1.1.1w/include src/ivnetback.c ./openssl-1.1.1w/libssl.a ./openssl-1.1.1w/libcrypto.a -o bin/ivnetback -D ENABLE_LOCALHOST -lm -lpthread -ldl
     success=$?
 
     if [ $success -ne 0 ]; then

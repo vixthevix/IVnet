@@ -8,12 +8,15 @@ Visit https://github.com/vixthevix/IVnet for more info.
 // #include <openssl/evp.h>
 // #include <openssl/prov_ssl.h>
 
+#include "base64/base64.h"
+#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
 
+#include <sys/poll.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -30,10 +33,17 @@ Visit https://github.com/vixthevix/IVnet for more info.
 #include <errno.h>
 #include <poll.h>
 
+#include <netinet/tcp.h>
+
 //OpenSSL 3.0 libraries and cottage
+#define ENABLE_LOCALHOST //TESTING DEFINITION
 #if defined(ENABLE_LOCALHOST)
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+
+// //for legacy ciphers
+// #include <openssl/provider.h> 
+// extern OSSL_provider_init_fn ossl_legacy_provider_init;
 
 #define COTTAGE_START
 #include "cottage/cottage.h"
@@ -117,31 +127,36 @@ bool createLocalChain(const char* cert_path, const char* key_path) {
 
     const char* csr_info = "\"/CN=nas.nintendowifi.net/O=Nintendo/C=JP\"";
     
+    const unsigned int rsa_key_size = 1024; //in bits
+
     //Command buffer
     char cmd[1024] = {0};
 
     //Local server private key
-    sprintf(cmd, "openssl genrsa -out %s 2048 1>/dev/null", server_key);
+    sprintf(cmd, "openssl genrsa -out %s %u 1>/dev/null", server_key, rsa_key_size);
     system(cmd);
 
     //Certificate Signing Request (contains data for the DS to verify)
     sprintf(cmd,
-        "openssl req -new -key %s -out %s -subj %s 1>/dev/null",
+        "openssl req -new -sha1 -key %s -out %s -subj %s 1>/dev/null",
         server_key, server_csr, csr_info
     );
     system(cmd);
 
     //Server certificate, signed with function arguments.
     sprintf(cmd,
-        "openssl x509 -req -in %s -CA %s -CAkey %s -CAcreateserial -out %s -days 3650 1>/dev/null",
+        "openssl x509 -req -sha1 -in %s -CA %s -CAkey %s -CAcreateserial -out %s -days 3650 1>/dev/null",
         server_csr, cert_path, key_path, server_crt
     );
-    system(cmd);
+    system(cmd); 
 
     //Create certificate chain file
     sprintf(cmd, "cat %s %s > %s", server_crt, cert_path, server_chain);
     system(cmd);
 
+    //LET ME SEE THE CERTIFICATE FOR A BIT
+    sprintf(cmd, "cp %s /home/vixthevix/Documents/code/personal/IVnet", server_chain);
+    system(cmd);
     return true;
 }
 
@@ -159,6 +174,60 @@ void cleanLocalChain(void) {
 
     sprintf(cmd, "rm %s %s %s %s", server_key, server_csr, server_crt, server_chain);
     system(cmd);
+}
+
+/*
+Encodes string into Nitro Base64 strings.
+@arg plain -> string to encode.
+@return encoded string.
+*/
+char* nitroBase64Encode(char* plain) {
+    if (!plain) return NULL;
+    char* cipher = base64_encode(plain);
+    if (!cipher) return NULL;
+
+    //replace '=' with '*'
+    for (size_t i = 0; i < strlen(cipher); i++) {
+        if (cipher[i] == '=') cipher[i] = '*'; 
+    }
+
+    return cipher;
+}
+
+/*
+Decodes Nitro Base64 strings.
+@arg cipher -> string to decode.
+@return decoded string.
+*/
+char* nitroBase64Decode(char* cipher) {
+    if (!cipher) return NULL;
+    
+    //replace '*' with '='
+    for (size_t i = 0; i < strlen(cipher); i++) {
+        if (cipher[i] == '*') cipher[i] = '='; 
+    }
+    
+    char* plain = base64_decode(cipher);
+    if (!plain) return NULL;
+
+    return plain;
+}
+
+/*
+Generates a random string of a given length.
+@arg buffer -> stores random string.
+@arg len -> length of buffer.
+*/
+void generateRandomString(char *buffer, size_t len) {
+    char charset[] = "0123456789"
+                     "abcdefghijklmnopqrstuvwxyz"
+                     "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+    while (len-- > 0) {
+        size_t index = (double) rand() / RAND_MAX * (sizeof charset - 1);
+        *buffer++ = charset[index];
+    }
+    *buffer = '\0';
 }
 
 /*
@@ -215,8 +284,8 @@ Manages an IVnet HTTPS local server.
 */
 void HTTPS_manage(ServerConfig* server, int timeout, SSL_CTX* ctx) {
     int ready_count = CotPollPoll(server->poll, timeout);
-    for (int i = 0; i < ready_count; i++) {
-        int cur_fd = CotPollAccess(server->poll, i);
+    for (int index = 0; index < ready_count; index++) {
+        int cur_fd = CotPollAccess(server->poll, index);
         if (cur_fd == server->server_fd) {
             //new client
             int client_fd = serverAcceptClient(server);
@@ -226,21 +295,268 @@ void HTTPS_manage(ServerConfig* server, int timeout, SSL_CTX* ctx) {
         else {
             //existing client
 
+            //Ensure we send whole packets, instead of Linux default waiting
+            int nodelay_flag = 1;
+            setsockopt(cur_fd, IPPROTO_TCP, TCP_NODELAY, (char*)&nodelay_flag, sizeof(int));
+
             //Allow SSL to decrypt the message.
             SSL* ssl = SSL_new(ctx);
             SSL_set_fd(ssl, cur_fd); //attach our current client to SSL.
 
             //Perform the TLS handshake
-            if (SSL_accept(ssl) <= 0) {
-                ERR_print_errors_fp(stderr);
-                fprintf(stderr, "HANDSHAKE FAILED\n");
+            //Due to CotPoll being non blocking, we need to account for this
+            //using wait loops
+            const int ssl_accept_timeout = 1000; //milliseconds
+            int ssl_accept = 0;
+            while ((ssl_accept = SSL_accept(ssl)) <= 0) {
+                int ssl_err = SSL_get_error(ssl, ssl_accept);
+
+                if (ssl_err == SSL_ERROR_WANT_READ) {
+                    //Waiting to read from client, so pause
+                    struct pollfd ssl_pfd = {.fd = cur_fd, .events=POLLIN};
+                    if (poll(&ssl_pfd, 1, ssl_accept_timeout) <= 0) {
+                        fprintf(stderr, "HANDSHAKE READ TIMEOUT\n");
+                        break;
+                    }
+                    
+                }
+                else if (ssl_err == SSL_ERROR_WANT_WRITE) {
+                    //Waiting to write to client, so pause
+                    struct pollfd ssl_pfd = {.fd = cur_fd, .events=POLLOUT};
+                    if (poll(&ssl_pfd, 1, ssl_accept_timeout) <= 0) {
+                        fprintf(stderr, "HANDSHAKE WRITE TIMEOUT\n");
+                        break;
+                    }
+                }
+                else {
+                    //Actual error
+                    ERR_print_errors_fp(stderr);
+                    fprintf(stderr, "HANDSHAKE FAILED, CODE: %i\n", ssl_err);
+                    break;
+                }
             }
-            else {
+            // if (SSL_accept(ssl) <= 0) {
+            //     ERR_print_errors_fp(stderr);
+            //     fprintf(stderr, "HANDSHAKE FAILED\n");
+            // }
+            // else {
+            if (ssl_accept == 1) { //success
                 //We can now decrypt our NDS messages
+                //Also use wait polling here
                 char client_offload[2048] = {0}; 
-                int bytes = SSL_read(ssl, client_offload, sizeof(client_offload) - 1); //for null terminator
+                int bytes = 0;
+                //while we think we are reading...
+                while ((bytes = SSL_read(ssl, client_offload, sizeof(client_offload) - 1)) <= 0) {
+                    int ssl_err = SSL_get_error(ssl, bytes);
+
+                    if (ssl_err == SSL_ERROR_WANT_READ) {
+                        //Waiting to read from client, so pause
+                        struct pollfd ssl_pfd = {.fd = cur_fd, .events=POLLIN};
+                        poll(&ssl_pfd, 1, ssl_accept_timeout); 
+                    }
+                    else {
+                        //error
+                        break;
+                    }
+                }
+
+                //bytes = SSL_read(ssl, client_offload, sizeof(client_offload) - 1); //for null terminator
                 if (bytes > 0) fprintf(stderr, "DECRYPTED DS REQUEST:\n%s\n", client_offload);
                 else fprintf(stderr, "NO ENCRYPTED DS MESSAGE FOUND\n");
+
+                //now with our client offload, we can wrap it in a HttpRequest
+                HttpRequest request;
+                if (splitHttpRequest(&request, client_offload).status == COT_ERROR) {
+                    fprintf(stderr, "Could not wrap HTTP request.");
+                    goto cleanup;
+                }
+                
+                //Uniquely split our HTTP requests that we can get from the DS
+                
+                //Authentication
+                if (
+                    strcmp(strMapGet(request.options, "Host"), "nas.nintendowifi.net") == 0 &&
+                    request.type == POST &&
+                    strcmp(request.target, "/ac") == 0
+                ) {
+                    //request.payload has nitro base64 encoded data.
+                    //"nitro" because '=' gets replaced with '*', nintendo quirk
+                    //store in a stringMap
+
+                    fprintf(stderr, "REQUEST PAYLOAD:\n%s\n\n", request.payload);
+
+                    stringMap* vars = strMapInit();
+                    const int keyvalMax = 256;
+                    char key[256] = {0};
+                    char value[256] = {0};
+                    bool is_key = true;
+                    int keyval_index = 0;
+                    char* p = request.payload;
+                    for (size_t i = 0; i < strlen(p); i++) {
+                        if (p[i] == '=') {
+                            //Switching to value
+                            is_key = false;
+                            keyval_index = 0;
+                            continue;
+                        }
+                        else if (p[i] == '&') {
+                            is_key = true;
+                            keyval_index = 0;
+
+                            //we have our key and value, store them.
+                            strMapInsert(&vars, key, value);
+
+                            memset(key, 0, keyvalMax);
+                            memset(value, 0, keyvalMax);
+                            continue;
+                        }
+                        if (is_key) key[keyval_index++] = p[i];
+                        else value[keyval_index++] = p[i];
+                    }
+                    //if key and value left over, put them in.
+                    if (!is_key && key[0] && value[0]) {
+                        strMapInsert(&vars, key, value);
+                    }
+
+                    //Now, we have to use a base64 decoder 
+                    //to get plaintext values in vars.
+                    //store in a different map.
+                    stringMap* vars_plain = strMapInit();
+                    fprintf(stderr, "\nNAS PLAINTEXT VALUES:\n\n");
+                    for (size_t i = 0; i < vars->capacity; i++) {
+                        if (vars->items[i]) {
+                            char* key = vars->items[i]->key;
+                            char* value = vars->items[i]->value;
+                            if (!key || !value) continue;
+                            for (size_t j = 0; j < strlen(value); j++) {
+                                if (value[j] == '*') value[j] = '=';
+                            }
+
+                            char* plaintext = base64_decode(value);
+                            fprintf(stderr, "%s: %s -> %s\n", key, value, plaintext);
+                            strMapInsert(&vars_plain, key, plaintext);
+                            free(plaintext);
+                        }
+                        //else fprintf(stderr, "Nothing found at %lu\n", i);
+                    }
+
+                    //Now we have a good HttpRequest and vars.
+                    //Make a HttpResponse.
+                    /*
+                        the content type is plaintext.
+                        plaintext payload contains extra variables to be used.
+                            returncd -> success status (set to 001)
+                            locator -> name of server, kinda (can be whatever we want, but must be consistent in the future.)
+                            challenge -> random string for DS confirmation.
+                            authtoken -> authentication token combining userid, pswd and challenge.
+
+                            HOWEVER, the DS doesn't do any decryption of this itself.
+                            It may be used to validate future user sessions for speed or something, idk.
+                            But this means we can set these to whatever we want.
+                    */
+                    //Retry status
+                    const char* dummy_retry_plain = "0";
+                    //Return status (001 means success)
+                    const char* dummy_returncd_plain = "001";
+                    //Remember, may need to be consistent in the future.
+                    const char* dummy_locator_plain = "gamespy.com";
+                    
+                    //Challenge must be 8 characters long and random.
+                    const char* dummy_challenge_plain = "OSCB89BY";
+                    
+                    //Current date and time (not really)
+                    const char* dummy_datetime_plain = "20260910143832";
+                    //Token must be "NDS" + 80 characters
+                    //const char* dummy_token_plain = "NDS0LWJdDxG0Q14tAxv/ES3wuZ8jjF8Iyafh4LQSZfxGWOp0OX8Ul3Lf+JXbi8B2b6AC5ZeXmz0aZWQ37C5nu/s6w==";
+                    const char* dummy_token_plain = "NDSAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+                    //const char* dummy_token_plain = "NDS1234567890123";
+
+                    //Encrypt data
+                    char* dummy_retry_cipher = nitroBase64Encode(dummy_retry_plain);
+                    char* dummy_returncd_cipher = nitroBase64Encode(dummy_returncd_plain);
+                    char* dummy_locator_cipher = nitroBase64Encode(dummy_locator_plain);
+                    char* dummy_challenge_cipher = nitroBase64Encode(dummy_challenge_plain);
+                    char* dummy_datetime_cipher = nitroBase64Encode(dummy_datetime_plain);
+                    char* dummy_token_cipher = nitroBase64Encode(dummy_token_plain);
+
+                    //Build our payload
+                    //In the same Nitro Base64 format used before.
+                    char nas_payload[512] = {0};                    
+                    // sprintf(nas_payload,
+                    // "retry=%s\r\n"
+                    // "returncd=%s\r\n"
+                    // "locator=%s\r\n"
+                    // "challenge=%s\r\n"
+                    // "datetime=%s\r\n"
+                    // "token=%s\r\n",
+                    // dummy_retry_cipher, dummy_returncd_cipher,
+                    // dummy_locator_cipher, dummy_challenge_cipher,
+                    // dummy_datetime_cipher, dummy_token_cipher
+                    // );
+                    sprintf(nas_payload,
+                        "retry=%s&"
+                        "returncd=%s&"
+                        "locator=%s&"
+                        "challenge=%s&"
+                        "datetime=%s&"
+                        "token=%s\r\n", // The \r\n MUST be here
+                        dummy_retry_plain, dummy_returncd_plain,
+                        dummy_locator_plain, dummy_challenge_plain,
+                        dummy_datetime_plain, dummy_token_plain
+                    );
+                    char nas_payload_size[100] = {0};
+                    sprintf(nas_payload_size, "%zu", strlen(nas_payload));
+
+                    HttpResponse response;
+                    if (HttpResponseInit(&response, 1.0, HttpStatus_OK).status == COT_ERROR) {
+                        fprintf(stderr, "FAILED TO BUILD NAS RESPONSE.\n");
+                        strMapFree(vars);
+                        strMapFree(vars_plain);
+                        goto cleanup;
+                    }
+
+                    //Options
+                    HttpResponseAddOption(response, "Content-Type", "text/plain");
+                    HttpResponseAddOption(response, "Connection", "close");
+                    HttpResponseAddOption(response, "Content-Length", nas_payload_size);
+                    HttpResponseAddOption(response, "NODE", "wifiappe1");
+
+                    //Payload
+                    HttpResponseAddPayload(&response, nas_payload);
+                    fprintf(stderr, "\nRESPONSE PAYLOAD:\n%s\n\n", response.payload);
+
+
+
+                    char* response_string = buildHttpResponse(response);
+                    if (!response_string) {
+                        fprintf(stderr, "FAILED TO BUILD NAS RESPONSE STRING.\n");
+                        HttpResponseFree(response);
+                        strMapFree(vars);
+                        strMapFree(vars_plain);
+                        goto cleanup;
+                    }
+                    fprintf(stderr, "\nRESPONSE TO SEND:\n%s\n\n", response_string);
+
+                    if (SSL_write(ssl, response_string, strlen(response_string)) <= 0) {
+                        fprintf(stderr, "FAILED TO WRITE NAS RESPONSE TO DS.\n");
+                    }
+                    else {
+                        fprintf(stderr, "SUCCESFULLY WROTE NAS RESPONSE TO DS.\n");
+                        
+                        //Wait a bit for the DS to catch up
+                        //usleep(500000); //microseconds
+                    }
+
+                    //cleanup
+                    cleanup:
+                    if (response_string) free(response_string);
+                    HttpResponseFree(response);
+                    strMapFree(vars);
+                    strMapFree(vars_plain);
+                }
+
+                
+                HttpRequestFree(request);
             }
 
             SSL_shutdown(ssl);
@@ -719,6 +1035,7 @@ int main(int argc, char** argv) {
     #if defined(ENABLE_LOCALHOST)
     ServerConfig* server_http = NULL;
     ServerConfig* server_https = NULL;
+    ServerConfig* server_idk = NULL;
     #endif
 
     if (localhost) {
@@ -740,14 +1057,27 @@ int main(int argc, char** argv) {
             printf("IVnet:0:could not set up cotttage HTTPS server.");
             goto cleanup;   
         }
+        server_idk = serverInit(address, "29900", client_max);
 
         //Set up OpenSSL
+        // //Force legacy and default providers into memory
+        // OSSL_PROVIDER_add_builtin(NULL, "legacy", ossl_legacy_provider_init);
+        // OSSL_PROVIDER* legacy = OSSL_PROVIDER_load(NULL, "legacy");
+        // OSSL_PROVIDER* def = OSSL_PROVIDER_load(NULL, "legacy");
+        
+        // if (!legacy || !def) {
+        //     printf("IVnet:0:could not load legacy libraries.");
+        //     goto cleanup;
+        // }
+
+        //Normal OpenSSL setup
         SSL_library_init();
         OpenSSL_add_all_algorithms();
         SSL_load_error_strings();
 
         //SSL context
-        const SSL_METHOD* method = TLS_server_method();
+        //const SSL_METHOD* method = TLS_server_method();
+        const SSL_METHOD* method = SSLv23_server_method();
         SSL_CTX* ctx = SSL_CTX_new(method);
         if (!ctx) {
             ERR_print_errors_fp(stderr); //OpenSSL error handling
@@ -757,11 +1087,17 @@ int main(int argc, char** argv) {
 
         //Drop security to accept SSLv3 (needed for DS)
         SSL_CTX_set_security_level(ctx, 0);
+        
         //ONLY SSLv3
         SSL_CTX_set_min_proto_version(ctx, SSL3_VERSION);
         SSL_CTX_set_max_proto_version(ctx, SSL3_VERSION);
+        
         //Update cipher list to include older ciphers
-        SSL_CTX_set_cipher_list(ctx, "ALL:@SECLEVEL=0");
+        //SSL_CTX_set_cipher_list(ctx, "ALL:@SECLEVEL=0");
+        if (SSL_CTX_set_cipher_list(ctx, "RC4-MD5:RC4-SHA:DES-CBC3-SHA:@SECLEVEL=0") != 1) {
+            printf("IVnet:0:failed to set cipher list");
+            goto cleanup;
+        }
         //For compatibility with possibly broken SSL implementations
         SSL_CTX_set_options(ctx, SSL_OP_ALL);
 
@@ -802,6 +1138,7 @@ int main(int argc, char** argv) {
             //Server polling
             const int timeout = 100; //milliseconds
             HTTP_manage(server_http, timeout);
+            HTTP_manage(server_idk, timeout);
             HTTPS_manage(server_https, timeout, ctx);
             
             //check if dnsmasq or hostapd have failed
