@@ -240,18 +240,35 @@ stringMap* strMapNitroDecode(char* data) {
     int keyval_index = 0;
     for (size_t i = 0; i < strlen(data); i++) {
 
-        // --- ADD THIS BLOCK TO FIX URL ENCODING CORRUPTION ---
-        // If we see "%2A", convert it back into the Nitro '*'
-        if (data[i] == '%' && data[i+1] == '2' && (data[i+2] == 'A' || data[i+2] == 'a')) {
-            if (keyval_index < keyvalMax - 1) {
-                if (is_key) key[keyval_index++] = '*';
-                else value[keyval_index++] = '*';
-            }
-            i += 2; // Skip the "2A" since we just handled it
-            continue;
-        }
-        // -----------------------------------------------------
+        //Value can be URL decoded sometimes.
+        //Due to nature of Nitro Base64 encoding, we cannot use cottage's urlDecode.
+        //Instead, check for edge cases.
+        if (data[i] == '%' && data[i + 1] && data[i + 2]) { 
+            char check = 0;
 
+            if (data[i+1] == '2' && (data[i+2] == 'A' || data[i+2] == 'a')) {
+                // * symbol
+                check = '*';
+            }
+            else if (data[i+1] == '2' && (data[i+2] == 'B' || data[i+2] == 'b')) {
+                // + symbol
+                check = '+';
+            }
+            else if (data[i+1] == '2' && (data[i+2] == 'F' || data[i+2] == 'f')) {
+                // / symbol
+                check = '/';
+            }
+
+            if (check) {
+                if (keyval_index < keyvalMax - 1) { //Bounds check
+                    if (is_key) key[keyval_index++] = check;
+                    else value[keyval_index++] = check;
+                }
+                i += 2; //Skip "%__"
+                continue;
+            }
+        }
+        
         if (data[i] == '=') {
             //Switching to value
             is_key = false;
