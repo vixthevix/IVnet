@@ -50,7 +50,7 @@ Visit https://github.com/vixthevix/IVnet for more info.
 #endif
 
 //TESTING DEFINITION
-#define ENABLE_PROXY_DEBUG
+//#define ENABLE_PROXY_DEBUG
 #if defined (ENABLE_PROXY_DEBUG)
 const char* PCN_IP = "178.62.43.212";
 const char* PCN_HTTPS_PORT = "443";
@@ -222,6 +222,112 @@ char* nitroBase64Decode(char* cipher) {
 }
 
 /*
+Takes in contents of Nitro encoded data and
+makes mapping of keys to plain text.
+@arg data -> Nitro encoded data.
+@return mapping of keys to plain text.
+*/
+stringMap* strMapNitroDecode(char* data) {
+    if (!data) return NULL;
+
+    stringMap* map = strMapInit();
+    if (!map) return NULL;
+
+    const int keyvalMax = 256;
+    char key[256] = {0};
+    char value[256] = {0};
+    bool is_key = true;
+    int keyval_index = 0;
+    for (size_t i = 0; i < strlen(data); i++) {
+
+        // --- ADD THIS BLOCK TO FIX URL ENCODING CORRUPTION ---
+        // If we see "%2A", convert it back into the Nitro '*'
+        if (data[i] == '%' && data[i+1] == '2' && (data[i+2] == 'A' || data[i+2] == 'a')) {
+            if (keyval_index < keyvalMax - 1) {
+                if (is_key) key[keyval_index++] = '*';
+                else value[keyval_index++] = '*';
+            }
+            i += 2; // Skip the "2A" since we just handled it
+            continue;
+        }
+        // -----------------------------------------------------
+
+        if (data[i] == '=') {
+            //Switching to value
+            is_key = false;
+            keyval_index = 0;
+            continue;
+        }
+        else if (data[i] == '&') {
+            is_key = true;
+            keyval_index = 0;
+
+            //We have our key and value.
+            //Decode, then store
+            char* plain = nitroBase64Decode(value);
+            if (plain) {
+                fprintf(stderr, "%s: %s\n", key, plain);
+                strMapInsert(&map, key, plain);
+                free(plain);
+            }
+
+            memset(key, 0, keyvalMax);
+            memset(value, 0, keyvalMax);
+            continue;
+        }
+        if (is_key) key[keyval_index++] = data[i];
+        else value[keyval_index++] = data[i];
+    }
+    //if key and value left over, put them in.
+    if (!is_key && key[0] && value[0]) {
+        char* plain = nitroBase64Decode(value);
+        if (plain) {
+            fprintf(stderr, "%s: %s\n", key, plain);
+            strMapInsert(&map, key, plain);
+            free(plain);
+        }
+    }
+
+    return map;
+}
+
+/*
+Takes in contents of a stringMap and converts 
+into a Nitro encoded NWC standard payload.
+@arg map -> mapping of keys to plaintext.
+@return encoded string.
+*/
+char* strMapNitroEncode(stringMap* map) {
+    if (!map) return NULL;
+
+    dataVector vector = dataVectorInit(32);
+    if (!vector.data) return NULL;
+
+    size_t curCount = 0;
+    for (size_t i = 0; i < map->capacity; i++) {
+        if (map->items[i]) {
+            char* key = map->items[i]->key;
+            char* value_plain = map->items[i]->value;
+            if (!key || !value_plain) continue;
+            curCount++;
+            
+            char* value_cipher = nitroBase64Encode(value_plain);
+            if (!value_cipher) continue;
+
+            dataVectorPushString(&vector, key);
+            dataVectorPush(&vector, '=');
+            dataVectorPushString(&vector, value_cipher);
+            if (curCount < map->count) dataVectorPushString(&vector, "&");
+            else                       dataVectorPushString(&vector, "\r\n");
+
+            free(value_cipher);
+        }
+    }
+
+    return vector.data;
+}
+
+/*
 Generates a random string of a given length.
 @arg buffer -> stores random string.
 @arg len -> length of buffer.
@@ -266,18 +372,22 @@ void HTTP_manage(ServerConfig* server, int timeout) {
 
             if (HttpRequestValid(request) && request.type == GET) {
                 //Assuming its the connection test, send a default response.
+                fprintf(stderr, "GET HTTP request valid.\n\n");
                 HttpResponse response;
                 HttpResponseInit(&response, request.version, HttpStatus_OK);
                 
-                strMapInsert(&response.options, "Content-type", "text/html");
-                strMapInsert(&response.options, "X-Organization", "Nintendo");
-                strMapInsert(&response.options, "Server", "BigIp");
-                strMapInsert(&response.options, "Content-length", "2");
+                HttpResponseAddOption(&response, "Content-type", "text/html");
+                HttpResponseAddOption(&response, "X-Organization", "Nintendo");
+                HttpResponseAddOption(&response, "Server", "BigIp");
+                HttpResponseAddOption(&response, "Content-length", "2");
                 
-                response.payload = (char*) calloc(3, sizeof(char));
-                strcpy(response.payload, "ok");
+                HttpResponseAddPayload(&response, "ok", strlen("ok"));
 
-                sendCustom(response, cur_fd);
+                char* response_string = buildHttpResponse(response);
+                size_t response_size = HttpResponseTotalSize(response);
+                send(cur_fd, response_string, response_size, 0);
+
+                HttpResponseFree(response);
             }
 
             HttpRequestFree(request);
@@ -382,158 +492,227 @@ void HTTPS_manage(ServerConfig* server, int timeout, SSL_CTX* ctx) {
                 //To uniquely identify HTTPS requests from the DS, we need to
                 //get string maps of the Nitro encoded and decoded payload.
 
-                stringMap* vars_en = strMapInit();
-                const int keyvalMax = 256;
-                char key[256] = {0};
-                char value[256] = {0};
-                bool is_key = true;
-                int keyval_index = 0;
-                char* p = request.payload;
-                if (p) {
-                    for (size_t i = 0; i < strlen(p); i++) {
-                        if (p[i] == '=') {
-                            //Switching to value
-                            is_key = false;
-                            keyval_index = 0;
-                            continue;
-                        }
-                        else if (p[i] == '&') {
-                            is_key = true;
-                            keyval_index = 0;
-
-                            //we have our key and value, store them.
-                            strMapInsert(&vars_en, key, value);
-
-                            memset(key, 0, keyvalMax);
-                            memset(value, 0, keyvalMax);
-                            continue;
-                        }
-                        if (is_key) key[keyval_index++] = p[i];
-                        else value[keyval_index++] = p[i];
-                    }
-                    //if key and value left over, put them in.
-                    if (!is_key && key[0] && value[0]) {
-                        strMapInsert(&vars_en, key, value);
-                    }
-                }
-                //Use vars_en as a base for vars_de
-                stringMap* vars_de = strMapInit();
-                for (size_t i = 0; i < vars_en->capacity; i++) {
-                    if (vars_en->items[i]) {
-                        char* key = vars_en->items[i]->key;
-                        char* value = vars_en->items[i]->value;
-                        if (!key || !value) continue;
-                        
-                        char* plaintext = nitroBase64Decode(value);
-                    
-                        fprintf(stderr, "%s: %s -> %s\n", key, value, plaintext);
-                        strMapInsert(&vars_de, key, plaintext);
-                        free(plaintext);
-                    }
-                }
-
+                stringMap* payload_vars = strMapNitroDecode(request.payload);
+                if (payload_vars) fprintf(stderr, "PAYLOAD FULLY DECRYPTED\n\n");
+                
                 //Now, we can check the specific HTTPS request.
                 HttpResponse response;
-                memset(&response, 0, sizeof(HttpResponse));
+                char* response_string = NULL;
+                if (HttpResponseInit(&response, 1.0, HttpStatus_OK).status == COT_ERROR) {
+                    fprintf(stderr, "FAILED TO BUILD NAS RESPONSE.\n");
+                    goto cleanup;
+                }
+
+                //constants for mystery gift
+                const char* svchost = "local.ivnet.net";
+                const char* test_gift_location = "/home/vixthevix/Documents/code/personal/IVnet/private/gifts/amemone_shroomish.myg";
+                const char* test_gift = "amemone_shroomish.myg";
+
+                char* check_buffer = NULL;
 
                 //Authentication
                 if (
-                    strcmp(strMapGet(request.options, "Host"), "nas.nintendowifi.net") == 0 &&
+                    (strMapGet(request.options, "Host")) && strcmp(strMapGet(request.options, "Host"), "nas.nintendowifi.net") == 0 &&
                     request.type == POST &&
                     strcmp(request.target, "/ac") == 0 &&
-                    strcmp(strMapGet(vars_de, "action"), "login") == 0
+                    (strMapGet(payload_vars, "action")) && strcmp(strMapGet(payload_vars, "action"), "login") == 0
                 ) {
-                    //Retry status
-                    const char* dummy_retry_plain = "0";
-                    //Return status (001 means success)
-                    const char* dummy_returncd_plain = "001";
-                    //Remember, may need to be consistent in the future.
-                    const char* dummy_locator_plain = "gamespy.com";
-                    
-                    //Challenge must be 8 characters long and random.
-                    const char* dummy_challenge_plain = "OSCB89BY";
-                    
-                    //Current date and time (not really)
-                    const char* dummy_datetime_plain = "20260910143832";
+                    fprintf(stderr, "AUTHENTICATION: start\n\n");
+                    stringMap* response_vars = strMapInit();
+                    if (!response_vars) goto cleanup;
+
+                    strMapInsert(&response_vars, "retry", "0");
+                    //001 -> success
+                    strMapInsert(&response_vars, "returncd", "001");
+                    strMapInsert(&response_vars, "locator", "gamespy.com");
+                    //Challenge must be 8 characters long
+                    strMapInsert(&response_vars, "challenge", "12345678");
+                    strMapInsert(&response_vars, "datetime", "20260910143832");
                     //Token must be "NDS" + some number of characters.
                     //Not sure if these characters matter too much. so make it whatever you want.
-                    const char* dummy_token_plain = "NDS/IVnet";
-                    //const char* dummy_token_plain = "NDSAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-                    //const char* dummy_token_plain = "NDS1234567890123";
+                    strMapInsert(&response_vars, "token", "NDS/IVnet");
 
-                    //Encrypt data
-                    char* dummy_retry_cipher = nitroBase64Encode(dummy_retry_plain);
-                    char* dummy_returncd_cipher = nitroBase64Encode(dummy_returncd_plain);
-                    char* dummy_locator_cipher = nitroBase64Encode(dummy_locator_plain);
-                    char* dummy_challenge_cipher = nitroBase64Encode(dummy_challenge_plain);
-                    char* dummy_datetime_cipher = nitroBase64Encode(dummy_datetime_plain);
-                    char* dummy_token_cipher = nitroBase64Encode(dummy_token_plain);
+                    char* response_payload = strMapNitroEncode(response_vars);
+                    if (!response_payload) goto cleanup;
 
-                    //Build our payload
-                    //In the same Nitro Base64 format used before.
-                    char nas_payload[512] = {0};                    
-                    sprintf(nas_payload,
-                    "retry=%s&"
-                    "returncd=%s&"
-                    "locator=%s&"
-                    "challenge=%s&"
-                    "datetime=%s&"
-                    "token=%s\r\n", // <- DEFINITELY A CARRIAGE RETURN HERE.
-                    dummy_retry_cipher, dummy_returncd_cipher,
-                    dummy_locator_cipher, dummy_challenge_cipher,
-                    dummy_datetime_cipher, dummy_token_cipher
-                    );
-                    // sprintf(nas_payload,
-                    //     "retry=%s&"
-                    //     "returncd=%s&"
-                    //     "locator=%s&"
-                    //     "challenge=%s&"
-                    //     "datetime=%s&"
-                    //     "token=%s\r\n", // The \r\n MUST be here
-                    //     dummy_retry_plain, dummy_returncd_plain,
-                    //     dummy_locator_plain, dummy_challenge_plain,
-                    //     dummy_datetime_plain, dummy_token_plain
-                    // );
-                    char nas_payload_size[100] = {0};
-                    sprintf(nas_payload_size, "%zu", strlen(nas_payload));
+                    fprintf(stderr, "AUTHENTICATION: response_payload\n\n");
 
-                    
-                    if (HttpResponseInit(&response, 1.0, HttpStatus_OK).status == COT_ERROR) {
-                        fprintf(stderr, "FAILED TO BUILD NAS RESPONSE.\n");
-                        goto cleanup;
-                    }
+                    char response_payload_size[100] = {0};
+                    sprintf(response_payload_size, "%zu", strlen(response_payload));
 
                     //Options
-                    HttpResponseAddOption(response, "Content-Type", "text/plain;charset=UTF-8");
-                    HttpResponseAddOption(response, "Connection", "close");
-                    HttpResponseAddOption(response, "Content-Length", nas_payload_size);
-                    HttpResponseAddOption(response, "NODE", "wifiappw3");
-                    HttpResponseAddOption(response, "Server", "IVnet");
-                    HttpResponseAddOption(response, "Date", "Christmas");
-                    HttpResponseAddOption(response, "Vary", "Accept-Encoding");
-                    HttpResponseAddOption(response, "Duration", "D=0 usec");
+                    HttpResponseAddOption(&response, "Content-Type", "text/plain;charset=UTF-8");
+                    HttpResponseAddOption(&response, "Connection", "close");
+                    HttpResponseAddOption(&response, "Content-Length", response_payload_size);
+                    HttpResponseAddOption(&response, "NODE", "wifiappw3");
+                    HttpResponseAddOption(&response, "Server", "IVnet");
+                    HttpResponseAddOption(&response, "Date", "Christmas");
+                    HttpResponseAddOption(&response, "Vary", "Accept-Encoding");
+                    HttpResponseAddOption(&response, "Duration", "D=0 usec");
+
+                    fprintf(stderr, "AUTHENTICATION: response options\n\n");
 
                     //Payload
-                    HttpResponseAddPayload(&response, nas_payload);
+                    HttpResponseAddPayload(&response, response_payload, strlen(response_payload));
                     fprintf(stderr, "\nRESPONSE PAYLOAD:\n%s\n\n", response.payload);
 
+                    free(response_payload);
+                    strMapFree(response_vars);
+                    fprintf(stderr, "AUTHENTICATION: done\n\n");
                 }
-                //Mystery gift
+                //Mystery gift start request
                 else if (
-                    strcmp(strMapGet(request.options, "Host"), "nas.nintendowifi.net") == 0 &&
+                    (strMapGet(request.options, "Host")) && strcmp(strMapGet(request.options, "Host"), "nas.nintendowifi.net") == 0 &&
                     request.type == POST &&
                     strcmp(request.target, "/ac") == 0 &&
-                    strcmp(strMapGet(vars_de, "action"), "login") == 0
+                    (strMapGet(payload_vars, "action")) && strcmp(strMapGet(payload_vars, "action"), "SVCLOC") == 0
                 ) {
+                    /*
+                    Response options look pretty much the same as login.
+                    Payload options has two tokens, a returncd of 007, and statusdata of Y.
+                    Also has a svchost, which can be whatever we want as far as im concerned.
+                    */
+                    stringMap* response_vars = strMapInit();
+                    if (!response_vars) goto cleanup;
 
+                    strMapInsert(&response_vars, "retry", "0");
+                    //007 -> Server found (AKA mystery gifts exist.)
+                    //Maybe check first if there are local gifts available first,
+                    //to return either 000 or 007
+                    strMapInsert(&response_vars, "returncd", "007");
+                    strMapInsert(&response_vars, "datetime", "20260910143832");
+                    //Token must be "NDS" + some number of characters.
+                    //Not sure if these characters matter too much. so make it whatever you want.
+                    //Servicetoken copies token.
+                    strMapInsert(&response_vars, "token", "NDS/IVnet");
+                    strMapInsert(&response_vars, "servicetoken", "NDS/IVnet");
+                    //Status of server (active or not)
+                    strMapInsert(&response_vars, "statusdata", "Y");
+                    //Mystery gift host (VERY IMPORTANT)
+                    strMapInsert(&response_vars, "svchost", svchost);
+
+                    char* response_payload = strMapNitroEncode(response_vars);
+                    if (!response_payload) goto cleanup;
+
+                    char response_payload_size[100] = {0};
+                    sprintf(response_payload_size, "%zu", strlen(response_payload));
+
+
+                    HttpResponseAddOption(&response, "Content-Type", "text/plain;charset=UTF-8");
+                    HttpResponseAddOption(&response, "Connection", "close");
+                    HttpResponseAddOption(&response, "Content-Length", response_payload_size);
+                    HttpResponseAddOption(&response, "NODE", "wifiappw3");
+                    HttpResponseAddOption(&response, "Server", "IVnet");
+                    HttpResponseAddOption(&response, "Date", "Christmas");
+                    HttpResponseAddOption(&response, "Vary", "Accept-Encoding");
+                    HttpResponseAddOption(&response, "Duration", "D=0 usec");
+                    
+                    HttpResponseAddPayload(&response, response_payload, strlen(response_payload));
+                    fprintf(stderr, "\nRESPONSE PAYLOAD:\n%s\n\n", response.payload);
+                }
+                //Mystery gift "count" request
+                else if (
+                    request.type == POST &&
+                    (request.target) && strcmp(request.target, "/download") == 0 &&
+                    (strMapGet(request.options, "Host")) && strcmp(strMapGet(request.options, "Host"), svchost) == 0 &&
+                    (strMapGet(payload_vars, "action")) && strcmp(strMapGet(payload_vars, "action"), "count") == 0
+                ) {
+                    //Very simple response, its the number of mystery gifts to be sent.
+                    //Almost always respond with 1. Maybe experiment with this?
+                    const unsigned gift_count = 1;
+                    char gift_count_str[10] = {0};
+                    sprintf(gift_count_str, "%u", gift_count);
+
+                    const unsigned gift_count_len = strlen(gift_count_str);
+                    char gift_count_len_str[10] = {0};
+                    sprintf(gift_count_len_str, "%u", gift_count_len);
+
+                    HttpResponseAddOption(&response, "Content-Type", "text/plain");
+                    HttpResponseAddOption(&response, "Connection", "close");
+                    HttpResponseAddOption(&response, "Content-Length", gift_count_len_str);
+                    HttpResponseAddOption(&response, "Server", "IVnet");
+                    HttpResponseAddOption(&response, "Date", "Christmas");
+
+                    HttpResponseAddPayload(&response, gift_count_str, gift_count_len);
+                    fprintf(stderr, "\nRESPONSE PAYLOAD:\n%s\n\n", response.payload);
+                }
+                //Mystery gift "list" request
+                else if (
+                    request.type == POST &&
+                    (request.target) && strcmp(request.target, "/download") == 0 &&
+                    (strMapGet(request.options, "Host")) && strcmp(strMapGet(request.options, "Host"), svchost) == 0 &&
+                    (strMapGet(payload_vars, "action")) && strcmp(strMapGet(payload_vars, "action"), "list") == 0
+                ) {
+                    //We show all our mystery gifts
+                    //Look through MysteryGift .myg folder, to find "count" random gifts.
+                    /*
+                    It appears the "num" parameter may be some sort of max buffer.
+                    "offset" indicates how many gifts it has received so far.
+                    this means we must keep track of "offset" and our previous "count"
+                    and send a maximum of 10 gifts at a time.
+                    For now, we just hardcode 1.
+                    
+                    202dppUNalarmclock.myg					936
+                    each line of the gift ends with \r\n.
+                    5 tab spaces between gift name and gift size.
+                    In practice, use a dataVector for this most likely.
+                    */
+                    dataVector list_response = dataVectorInit(64);
+                    dataVectorPushString(&list_response, test_gift);
+                    dataVectorPushString(&list_response, "\t\t\t\t\t936");
+                    dataVectorPushString(&list_response, "\r\n");
+
+                    char list_response_size[10] = {0};
+                    sprintf(list_response_size, "%lu", strlen(list_response.data));
+                    
+                    HttpResponseAddOption(&response, "Content-Type", "text/plain");
+                    HttpResponseAddOption(&response, "Connection", "close");
+                    HttpResponseAddOption(&response, "Content-Length", list_response_size);
+                    HttpResponseAddOption(&response, "Server", "IVnet");
+                    HttpResponseAddOption(&response, "Date", "Christmas");
+
+                    HttpResponseAddPayload(&response, list_response.data, strlen(list_response.data));
+                    fprintf(stderr, "\nRESPONSE PAYLOAD:\n%s\n\n", response.payload);
+                }
+                //Mystery gift "contents" request
+                else if (
+                    request.type == POST &&
+                    (request.target) && strcmp(request.target, "/download") == 0 &&
+                    (strMapGet(request.options, "Host")) && strcmp(strMapGet(request.options, "Host"), svchost) == 0 &&
+                    (strMapGet(payload_vars, "action")) && strcmp(strMapGet(payload_vars, "action"), "contents") == 0
+                ) {
+                    //Finally, we send our .myg file.
+                    FILE* shroom_file = fopen(test_gift_location, "rb");
+                    if (!shroom_file) goto cleanup;
+
+                    const int size = 936;
+                    char buffer[1200] = {0};
+                    fread(buffer, 1, size, shroom_file);
+                    fclose(shroom_file);
+
+                    //We ned a little something for content disposition option.
+                    char content_disposition[100] = {0};
+                    sprintf(content_disposition, "attachment; filename = \"%s\"", test_gift);
+                    
+                    HttpResponseAddOption(&response, "Content-Type", "application/x-dsdl");
+                    HttpResponseAddOption(&response, "Connection", "close");
+                    HttpResponseAddOption(&response, "Content-Length", "936");
+                    HttpResponseAddOption(&response, "Server", "IVnet");
+                    HttpResponseAddOption(&response, "Date", "Christmas");
+                    HttpResponseAddOption(&response, "Content-Disposition", content_disposition);
+                    
+                    HttpResponseAddPayload(&response, buffer, size);
+                    fprintf(stderr, "\nRESPONSE PAYLOAD:\n%s\n\n", response.payload);
+                    fprintf(stderr, "%s has been sent off!\n\n", test_gift);
                 }
                 else {
                     //No case for this specific HTTPS request.
+                    fprintf(stderr, "NO HTTPS REQUEST CASE FOUND.\n\n");
                     goto cleanup;
                 }
 
                 //Response set up
-                char* response_string = buildHttpResponse(response);
+                response_string = buildHttpResponse(response);
                 if (!response_string) {
                     fprintf(stderr, "FAILED TO BUILD NAS RESPONSE STRING.\n");
                     HttpResponseFree(response);
@@ -543,7 +722,7 @@ void HTTPS_manage(ServerConfig* server, int timeout, SSL_CTX* ctx) {
 
 
                 //With our response string finished, we need to carefully write to the DS.
-                int total_bytes = strlen(response_string);
+                int total_bytes = HttpResponseTotalSize(response);
                 int cur_bytes = 0;
                 while (cur_bytes < total_bytes) {
                     int written = SSL_write(ssl, response_string + cur_bytes, total_bytes - cur_bytes);
@@ -561,6 +740,7 @@ void HTTPS_manage(ServerConfig* server, int timeout, SSL_CTX* ctx) {
                 fprintf(stderr, "HTTPS DELIVERED %d / %d BYTES\n\n", cur_bytes, total_bytes);
                 
                 cleanup:
+                strMapFree(payload_vars);
                 HttpRequestFree(request);
                 HttpResponseFree(response);
                 if (response_string) free(response_string);
@@ -571,16 +751,19 @@ void HTTPS_manage(ServerConfig* server, int timeout, SSL_CTX* ctx) {
             if (shutdown_ret == 0) {
                 //Wait for the DS to confirm end of connection.
                 int ret = 0;
-                while ((ret = SSL_shutdown(ssl)) < 0) {
+                int timeout_count = 0;
+                while ((ret = SSL_shutdown(ssl)) < 0 && timeout_count < 50) {
                     int err = SSL_get_error(ssl, ret);
                     if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
                         //DS is still processing.
                         usleep(1000);
+                        timeout_count++;
                     } else {
                         break;
                     }
                 }
             }
+            fprintf(stderr, "shut down\n\n");
             SSL_free(ssl);
             CotPollPop(server->poll, cur_fd);
             serverCloseClient(cur_fd);
@@ -644,10 +827,10 @@ void HTTP_proxy(ServerConfig* server, int timeout, FILE** output) {
                 HttpResponse response;
                 HttpResponseInit(&response, request.version, HttpStatus_OK);
                 
-                strMapInsert(&response.options, "Content-type", "text/html");
-                strMapInsert(&response.options, "X-Organization", "Nintendo");
-                strMapInsert(&response.options, "Server", "BigIp");
-                strMapInsert(&response.options, "Content-length", "2");
+                HttpResponseAddOption(&response, "Content-type", "text/html");
+                HttpResponseAddOption(&response, "X-Organization", "Nintendo");
+                HttpResponseAddOption(&response, "Server", "BigIp");
+                HttpResponseAddOption(&response, "Content-length", "2");
                 
                 response.payload = (char*) calloc(3, sizeof(char));
                 strcpy(response.payload, "ok");
@@ -849,7 +1032,32 @@ void HTTPS_proxy(ServerConfig* server, int timeout, SSL_CTX* ctx, FILE** output)
                 if (pcn_total_bytes > 0) {
                     fprintf(stderr, "----------PCN HTTPS RESPONSE START----------\n\n%s\n\n----------PCN HTTPS RESPONSE END----------\n\n", client_offload);
                     fprintf(*output, "----------PCN HTTPS RESPONSE START----------\n\n%s\n\n----------PCN HTTPS RESPONSE END----------\n\n", client_offload);
-                
+                    
+                    //CAPTURE THE MYG FILE (for IVgift analysis)
+                    if (strstr(client_offload, "filename") != NULL) {
+                        //The only packet with the .myg file, has "filename" in the HTTP raw buffer.
+                        //We use strstr to get the Content-Length, use atoi to convert into number,
+                        //then start reading client_offload from pcn_total_bytes for Content-Length
+                        char* content_length_ptr = strstr(client_offload, "Content-Length: ");
+                        if (content_length_ptr) {
+                            content_length_ptr += strlen("Content-Length: ");
+                            char content_length_str[10] = {0};
+                            int i = 0;
+                            while (*(content_length_ptr) != '\r') {
+                                content_length_str[i++] = *content_length_ptr;
+                                content_length_ptr++;
+                            }
+                            int content_length = atoi(content_length_str);
+                            fprintf(stderr,"CLSTR: %s, CLVAL: %i\n\n", content_length_str, content_length);
+                            int myg_pointer = pcn_total_bytes - content_length, myg_stride = content_length;
+                            fprintf(stderr, "MYG POINTER: %i, MYG STRIDE: %i\n\n", myg_pointer, myg_stride);
+                            //Open up a new binary file.
+                            FILE* myg_file = fopen("/tmp/ivnet/gift.myg", "wb");
+                            fwrite(&client_offload[myg_pointer], 1, myg_stride, myg_file);
+                            fclose(myg_file);
+                        }
+                    }
+
                     //Forward this to the DS.
                     int pcn_cur_bytes = 0;
                     while (pcn_cur_bytes < pcn_total_bytes) {
@@ -1402,25 +1610,27 @@ int main(int argc, char** argv) {
     "dhcp-range=%2$u.%3$u.%4$u.10,%2$u.%3$u.%4$u.50,3h\n" //dongle access point range and timer
     "dhcp-option=6,%5$s\n"; //DNS
 
-    // const char* dnsmasq_contents_local = 
-    // "interface=%1$s\n" //dongle name
-    // "bind-interfaces\n"
-    // "dhcp-range=%2$u.%3$u.%4$u.10,%2$u.%3$u.%4$u.50,3h\n" //dongle access point range and timer
-    // "dhcp-option=3,%2$u.%3$u.%4$u.%5$u\n" // <--- ADD THIS: Default Gateway
-    // "dhcp-option=6,%2$u.%3$u.%4$u.%5$u\n" //DNS
-    // "address=/#/%2$u.%3$u.%4$u.%5$u\n"; //spoofing rule: intercept every request to the server
-
     const char* dnsmasq_contents_local = 
-    "interface=%1$s\n"
+    "interface=%1$s\n" //dongle name
     "bind-interfaces\n"
-    "server=178.62.43.212\n" // Use Wiimmfi's real DNS for GameSpy routing
-    "dhcp-range=%2$u.%3$u.%4$u.10,%2$u.%3$u.%4$u.50,3h\n"
-    "dhcp-option=3,%2$u.%3$u.%4$u.%5$u\n" // Gateway (crucial for routing)
-    "dhcp-option=6,%2$u.%3$u.%4$u.%5$u\n"
-    // --- REPLACE THE WILDCARD WITH THESE TWO SPECIFIC LINES ---
-    "address=/dls1.ilostmymind.xyz/%2$u.%3$u.%4$u.%5$u\n"
-    "address=/nas.nintendowifi.net/%2$u.%3$u.%4$u.%5$u\n"
-    "address=/conntest.nintendowifi.net/%2$u.%3$u.%4$u.%5$u\n";
+    "dhcp-range=%2$u.%3$u.%4$u.10,%2$u.%3$u.%4$u.50,3h\n" //dongle access point range and timer
+    "dhcp-option=3,%2$u.%3$u.%4$u.%5$u\n" // <--- ADD THIS: Default Gateway
+    "dhcp-option=6,%2$u.%3$u.%4$u.%5$u\n" //DNS
+    "address=/#/%2$u.%3$u.%4$u.%5$u\n"; //spoofing rule: intercept every request to the server
+
+    //USED FOR PROXY
+    // const char* dnsmasq_contents_proxy = 
+    // "interface=%1$s\n"
+    // "bind-interfaces\n"
+    // "server=178.62.43.212\n" // Use Wiimmfi's real DNS for GameSpy routing
+    // "dhcp-range=%2$u.%3$u.%4$u.10,%2$u.%3$u.%4$u.50,3h\n"
+    // "dhcp-option=3,%2$u.%3$u.%4$u.%5$u\n" // Gateway (crucial for routing)
+    // "dhcp-option=6,%2$u.%3$u.%4$u.%5$u\n"
+    // // --- REPLACE THE WILDCARD WITH THESE TWO SPECIFIC LINES ---
+    // "address=/dls1.ilostmymind.xyz/%2$u.%3$u.%4$u.%5$u\n"
+    // "address=/nas.nintendowifi.net/%2$u.%3$u.%4$u.%5$u\n"
+    // "address=/conntest.nintendowifi.net/%2$u.%3$u.%4$u.%5$u\n";
+
 
     //Write out the config files
     FILE* hostapd = fopen("/tmp/ivnet/hostapd.conf", "w");
