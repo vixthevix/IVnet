@@ -522,8 +522,36 @@ void HTTPS_manage(ServerConfig* server, int timeout, SSL_CTX* ctx) {
 
                 //constants for mystery gift
                 const char* svchost = "local.ivnet.net";
-                const char* test_gift_location = "/home/vixthevix/Documents/code/personal/IVnet/private/gifts/amemone_shroomish.myg";
-                const char* test_gift = "amemone_shroomish.myg";
+                const char* test_gift_location = "/home/vixthevix/Documents/code/personal/IVnet/private/gifts";
+
+                //all mystery gift files on the server
+                char** test_gifts = (char**) calloc(50, sizeof(char*));
+                int test_gifts_index = 0;
+                DIR* directory = opendir(test_gift_location);
+                int dir_fd = dirfd(directory);
+                struct dirent* dentry;
+                while ((dentry = readdir(directory))) {
+                    fprintf(stderr, "FOUND %s\n", dentry->d_name);
+                    //Get file info
+                    struct stat dentry_stats;
+                    int dentry_status = fstatat(dir_fd, dentry->d_name, &dentry_stats, 0);
+
+                    //Check file info
+                    if (
+                        (dentry_stats.st_mode & S_IFREG) && //Normal file
+                        (strstr(dentry->d_name, ".myg") != NULL) && //MYG file ending
+                        (dentry_stats.st_size == 936) //MYG file size
+                    ) {
+                        test_gifts[test_gifts_index] = calloc(strlen(dentry->d_name) + 1, sizeof(char));
+                        strcpy(test_gifts[test_gifts_index], dentry->d_name);
+                        test_gifts_index++;
+                        fprintf(stderr, "FOUND MYG %s\n", dentry->d_name);
+                    }
+                }
+
+                closedir(directory);
+                srand(time(NULL));
+                static int r = 0;
 
                 char* check_buffer = NULL;
 
@@ -673,11 +701,28 @@ void HTTPS_manage(ServerConfig* server, int timeout, SSL_CTX* ctx) {
                     each line of the gift ends with \r\n.
                     5 tab spaces between gift name and gift size.
                     In practice, use a dataVector for this most likely.
+                    
+                    Read every file in the test folder, along with file size.
+                    
                     */
+
+                    
+                    r = rand() % test_gifts_index;
+                    
                     dataVector list_response = dataVectorInit(64);
-                    dataVectorPushString(&list_response, test_gift);
-                    dataVectorPushString(&list_response, "\t\t\t\t\t936");
-                    dataVectorPushString(&list_response, "\r\n");
+                    dataVectorPushString(&list_response, test_gifts[r]);
+                    dataVectorPushString(&list_response, "\t\t\t\t\t936\r\n");
+
+                    // dataVector list_response = dataVectorInit(64);
+                    // for (int i = 0; i < test_gifts_index; i++) {
+                    //     dataVectorPushString(&list_response, test_gifts[test_gifts_index]);
+                    //     dataVectorPushString(&list_response, "\t\t\t\t\t936\r\n");
+                    // }
+
+                    // dataVector list_response = dataVectorInit(64);
+                    // dataVectorPushString(&list_response, test_gift);
+                    // dataVectorPushString(&list_response, "\t\t\t\t\t936");
+                    // dataVectorPushString(&list_response, "\r\n");
 
                     char list_response_size[10] = {0};
                     sprintf(list_response_size, "%lu", strlen(list_response.data));
@@ -690,6 +735,7 @@ void HTTPS_manage(ServerConfig* server, int timeout, SSL_CTX* ctx) {
 
                     HttpResponseAddPayload(&response, list_response.data, strlen(list_response.data));
                     fprintf(stderr, "\nRESPONSE PAYLOAD:\n%s\n\n", response.payload);
+                    free(list_response.data);
                 }
                 //Mystery gift "contents" request
                 else if (
@@ -699,7 +745,12 @@ void HTTPS_manage(ServerConfig* server, int timeout, SSL_CTX* ctx) {
                     (strMapGet(payload_vars, "action")) && strcmp(strMapGet(payload_vars, "action"), "contents") == 0
                 ) {
                     //Finally, we send our .myg file.
-                    FILE* shroom_file = fopen(test_gift_location, "rb");
+                    //We grab a random one and send it.
+
+                    char fullFile[2048] = {0};
+                    snprintf(fullFile, 2048, "%s/%s", test_gift_location, test_gifts[r]);
+
+                    FILE* shroom_file = fopen(fullFile, "rb");
                     if (!shroom_file) goto cleanup;
 
                     const int size = 936;
@@ -709,7 +760,7 @@ void HTTPS_manage(ServerConfig* server, int timeout, SSL_CTX* ctx) {
 
                     //We ned a little something for content disposition option.
                     char content_disposition[100] = {0};
-                    sprintf(content_disposition, "attachment; filename = \"%s\"", test_gift);
+                    sprintf(content_disposition, "attachment; filename = \"%s\"", test_gifts[r]);
                     
                     HttpResponseAddOption(&response, "Content-Type", "application/x-dsdl");
                     HttpResponseAddOption(&response, "Connection", "close");
@@ -720,7 +771,7 @@ void HTTPS_manage(ServerConfig* server, int timeout, SSL_CTX* ctx) {
                     
                     HttpResponseAddPayload(&response, buffer, size);
                     fprintf(stderr, "\nRESPONSE PAYLOAD:\n%s\n\n", response.payload);
-                    fprintf(stderr, "%s has been sent off!\n\n", test_gift);
+                    fprintf(stderr, "%s has been sent off!\n\n", test_gifts[r]);
                 }
                 else {
                     //No case for this specific HTTPS request.
@@ -757,6 +808,11 @@ void HTTPS_manage(ServerConfig* server, int timeout, SSL_CTX* ctx) {
                 fprintf(stderr, "HTTPS DELIVERED %d / %d BYTES\n\n", cur_bytes, total_bytes);
                 
                 cleanup:
+                for (int i = 0; i < test_gifts_index; i++) {
+                    if (test_gifts[i]) free(test_gifts[i]);
+                }
+                free(test_gifts);
+
                 strMapFree(payload_vars);
                 HttpRequestFree(request);
                 HttpResponseFree(response);
@@ -1876,7 +1932,7 @@ int main(int argc, char** argv) {
         cleanLocalChain();
 
         #ifdef ENABLE_PROXY_DEBUG
-        FILE* proxy_output = fopen("/home/vixthevix/Documents/code/personal/IVnet/PROXY.debug", "w");
+        FILE* proxy_output = fopen("/home/vixthevix/Documents/code/personal/IVnet/private/PROXY.debug", "w");
         #endif
 
         char wait_buffer;
