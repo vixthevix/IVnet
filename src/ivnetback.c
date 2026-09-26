@@ -57,6 +57,15 @@ const char* PCN_HTTPS_PORT = "443";
 const char* PCN_RAWTCP_PORT = "29900";
 #endif
 
+
+char* dongle       = NULL; const char* dongle_f       = "--nid"  ;
+char* DNS          = NULL; const char* DNS_f          = "--dns"  ;
+char* country_code = NULL; const char* country_code_f = "--ccode";
+char* SSID         = NULL; const char* SSID_f         = "--ssid" ;
+
+char* cert_path    = NULL; const char* cert_path_f    = "--cert" ;
+char* myg_path     = NULL; const char* myg_path_f     = "--myg"  ;
+
 //Signal data for proper process-end cleanup
 volatile sig_atomic_t running = 1;
 
@@ -522,12 +531,12 @@ void HTTPS_manage(ServerConfig* server, int timeout, SSL_CTX* ctx) {
 
                 //constants for mystery gift
                 const char* svchost = "local.ivnet.net";
-                const char* test_gift_location = "/home/vixthevix/Documents/code/personal/IVnet/private/gifts";
+                const char* gift_location = myg_path;
 
                 //all mystery gift files on the server
                 char** test_gifts = (char**) calloc(50, sizeof(char*));
                 int test_gifts_index = 0;
-                DIR* directory = opendir(test_gift_location);
+                DIR* directory = opendir(gift_location);
                 int dir_fd = dirfd(directory);
                 struct dirent* dentry;
                 while ((dentry = readdir(directory))) {
@@ -551,7 +560,6 @@ void HTTPS_manage(ServerConfig* server, int timeout, SSL_CTX* ctx) {
 
                 closedir(directory);
                 srand(time(NULL));
-                static int r = 0;
 
                 char* check_buffer = NULL;
 
@@ -707,7 +715,7 @@ void HTTPS_manage(ServerConfig* server, int timeout, SSL_CTX* ctx) {
                     */
 
                     
-                    r = rand() % test_gifts_index;
+                    int r = rand() % test_gifts_index;
                     
                     dataVector list_response = dataVectorInit(64);
                     dataVectorPushString(&list_response, test_gifts[r]);
@@ -745,22 +753,24 @@ void HTTPS_manage(ServerConfig* server, int timeout, SSL_CTX* ctx) {
                     (strMapGet(payload_vars, "action")) && strcmp(strMapGet(payload_vars, "action"), "contents") == 0
                 ) {
                     //Finally, we send our .myg file.
-                    //We grab a random one and send it.
+                    //It is specified in the contents option of the payload_vars
+
+                    char* gift = strMapGet(payload_vars, "contents");
 
                     char fullFile[2048] = {0};
-                    snprintf(fullFile, 2048, "%s/%s", test_gift_location, test_gifts[r]);
+                    snprintf(fullFile, 2048, "%s/%s", gift_location, gift);
 
-                    FILE* shroom_file = fopen(fullFile, "rb");
-                    if (!shroom_file) goto cleanup;
+                    FILE* gift_file = fopen(fullFile, "rb");
+                    if (!gift_file) goto cleanup;
 
                     const int size = 936;
                     char buffer[1200] = {0};
-                    fread(buffer, 1, size, shroom_file);
-                    fclose(shroom_file);
+                    fread(buffer, 1, size, gift_file);
+                    fclose(gift_file);
 
                     //We ned a little something for content disposition option.
                     char content_disposition[100] = {0};
-                    sprintf(content_disposition, "attachment; filename = \"%s\"", test_gifts[r]);
+                    sprintf(content_disposition, "attachment; filename = \"%s\"", gift);
                     
                     HttpResponseAddOption(&response, "Content-Type", "application/x-dsdl");
                     HttpResponseAddOption(&response, "Connection", "close");
@@ -771,7 +781,7 @@ void HTTPS_manage(ServerConfig* server, int timeout, SSL_CTX* ctx) {
                     
                     HttpResponseAddPayload(&response, buffer, size);
                     fprintf(stderr, "\nRESPONSE PAYLOAD:\n%s\n\n", response.payload);
-                    fprintf(stderr, "%s has been sent off!\n\n", test_gifts[r]);
+                    fprintf(stderr, "%s has been sent off!\n\n", gift);
                 }
                 else {
                     //No case for this specific HTTPS request.
@@ -1360,28 +1370,50 @@ int main(int argc, char** argv) {
         printf("IVnet:0:Must run as root\n");
         return 1;
     }
-    
+
+
     /*
-    arguments consist of 
-        NIC, 
-        DNS, 
-        country code, 
-        and SSID.
+    Following requirements are required
+        NID
+        DNS
+        country code
+        SSID
+    
+    Following requirements are optional
+        Certificate folder location
+        Mystery gift folder
     */
-    const int 
-    arg_max = 4 + 1;
-    if (argc < arg_max) {
+
+    //Macro for argument checking
+    #define flagExists(flag, args, arg_index) (strcmp(args[arg_index], flag) == 0 && args[arg_index + 1])
+
+    for (int i = 1; i < argc; i++) {
+        if (flagExists(dongle_f, argv, i)) {
+            dongle = argv[++i];
+        }
+        else if (flagExists(DNS_f, argv, i)) {
+            DNS = argv[++i];
+        }
+        else if (flagExists(country_code_f, argv, i)) {
+            country_code = argv[++i];
+        }
+        else if (flagExists(SSID_f, argv, i)) {
+            SSID = argv[++i];
+        }
+
+        else if (flagExists(cert_path_f, argv, i)) {
+            cert_path = argv[++i];
+        }
+        else if (flagExists(myg_path_f, argv, i)) {
+            myg_path = argv[++i];
+        }
+    }
+
+    if (!dongle || !DNS || !country_code || !SSID) {
         printf("IVnet:0:Not enough parameters\n");
         perror("IVnet requires:\nname of NIC,\nDNS to connect to,\nISO 3166-1 alpha-2 country code,\nSSID to assign\n");
         return 1;
     }
-
-
-
-    char* dongle = argv[1];
-    char* DNS = argv[2];
-    char* country_code = argv[3];
-    char* SSID = argv[4];
     
     int status = 0;
 
@@ -1750,8 +1782,8 @@ int main(int argc, char** argv) {
         system(cmd);
 
         //RAWTCP requests
-        sprintf(cmd, "iptables -t nat -A PREROUTING -i %s -p tcp --dport %s -j REDIRECT --to-port %s", dongle_new, port_rawtcp, port_rawtcp);
-        system(cmd);
+        // sprintf(cmd, "iptables -t nat -A PREROUTING -i %s -p tcp --dport %s -j REDIRECT --to-port %s", dongle_new, port_rawtcp, port_rawtcp);
+        // system(cmd);
     }
 
 
@@ -1906,8 +1938,19 @@ int main(int argc, char** argv) {
 
         //Create the chain file, using certificate and key.
         //Should be passed in as arguments to ivnetback.
+
+        const int crt_maxlen = strlen(cert_path) + 50;
+        const int key_maxlen = crt_maxlen;
+
+        char* crt = (char*) calloc(crt_maxlen, sizeof(char));
+        snprintf(crt, crt_maxlen, "%s/nwc.crt", cert_path);
+
+        char* key = (char*) calloc(key_maxlen, sizeof(char));
+        snprintf(key, key_maxlen, "%s/nwc.key", cert_path);
+
+
         // if (!createLocalChain("", "")) {
-        if (!createLocalChain("/home/vixthevix/Documents/code/personal/IVnet/private/nwc2.crt", "/home/vixthevix/Documents/code/personal/IVnet/private/nwc2.key")) {
+        if (!createLocalChain(crt, key)) {
             printf("IVnet:0:could not create files needed for localhost");
             goto cleanup;
         }
@@ -2018,8 +2061,8 @@ int main(int argc, char** argv) {
         system(cmd);
         sprintf(cmd, "iptables -t nat -D PREROUTING -i %s -d %s -p tcp --dport 443 -j REDIRECT --to-port %s", dongle_new, local_address, port_https);
         system(cmd);
-        sprintf(cmd, "iptables -t nat -D PREROUTING -i %s -p tcp --dport %s -j REDIRECT --to-port %s", dongle_new, port_rawtcp, port_rawtcp);
-        system(cmd);
+        // sprintf(cmd, "iptables -t nat -D PREROUTING -i %s -p tcp --dport %s -j REDIRECT --to-port %s", dongle_new, port_rawtcp, port_rawtcp);
+        // system(cmd);
     }
 
     //revert ip_forward
