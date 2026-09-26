@@ -16,7 +16,7 @@ if [[ -z "${ENABLE_LOCALHOST}" ]]; then # No localhost
         exit
     fi
 
-    gcc src/ivnet.c -o bin/ivnet -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
+    gcc src/ivnet.c src/tinyfiledialogs/tinyfiledialogs.c -o bin/ivnet -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
     success=$?
 
     if [ $success -ne 0 ]; then
@@ -39,7 +39,7 @@ else
         exit
     fi
 
-    gcc src/ivnet.c -o bin/ivnet -D ENABLE_LOCALHOST -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
+    gcc src/ivnet.c src/tinyfiledialogs/tinyfiledialogs.c -o bin/ivnet -D ENABLE_LOCALHOST -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
     success=$?
 
     if [ $success -ne 0 ]; then

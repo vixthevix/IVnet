@@ -580,30 +580,69 @@ bool saveConfig(Config config, const char* path) {
 }
 
 /*
+Displays contents of config for debugging
+@arg config -> Config to display.
+*/
+void debugConfig(Config config) {
+    fprintf(stderr,
+    "CONFIG DETAILS:\n"
+    "COUNTRY CODE: %s\n"
+    "LOCALHOST: %s\n"
+    "CERT PATH: %s\n"
+    "MYG PATH: %s\n",
+    config.country_code, config.localhost ? "true" : "false", config.cert_path, config.myg_path);
+}
+
+/*
 Writes Config to visual text.
 @arg config -> current Config data.
 @arg buffer -> target to write to.
 @return status of write.
 */
-bool updateConfigText(Config config, dataVector buffer) {
-    if (!buffer.data) return false;
+bool updateConfigText(Config config, dataVector* buffer) {
+    if (!(buffer->data)) return false;
     
-    dataVectorPushString(&buffer, "CURRENT CONFIG\n\n");
+    dataVectorPushString(buffer, "CURRENT CONFIG\n\n");
 
-    dataVectorPushString(&buffer, "COUNTRY CODE: ");
-    dataVectorPushString(&buffer, config.country_code);
-    dataVectorPushString(&buffer, "\n\n");
+    dataVectorPushString(buffer, "COUNTRY CODE: ");
+    dataVectorPushString(buffer, config.country_code ? config.country_code : "NULL");
+    dataVectorPushString(buffer, "\n\n");
 
-    dataVectorPushString(&buffer, "LOCALHOST: ");
-    dataVectorPushString(&buffer, config.localhost ? "TRUE":"FALSE");
-    dataVectorPushString(&buffer, "\n\n");
+    dataVectorPushString(buffer, "LOCALHOST: ");
+    dataVectorPushString(buffer, config.localhost ? "TRUE":"FALSE");
+    dataVectorPushString(buffer, "\n\n");
 
-    dataVectorPushString(&buffer, "CERTIFICATE PATH: ");
-    dataVectorPushString(&buffer, config.cert_path);
-    dataVectorPushString(&buffer, "\n\n");
 
-    dataVectorPushString(&buffer, "MYSTERY GIFT PATH: ");
-    dataVectorPushString(&buffer, config.myg_path);
+    const int path_char_max = 30;
+
+    dataVectorPushString(buffer, "CERTIFICATE PATH:\n\n");
+    if (config.cert_path == NULL) dataVectorPushString(buffer, "NULL");
+    else {
+        int j = 0;
+        for (int i = 0; i < strlen(config.cert_path);) {
+            dataVectorPush(buffer, config.cert_path[i++]);
+            
+            j = i % path_char_max;
+            if (j == 0) {
+                dataVectorPush(buffer, '\n');
+            }
+        }
+    }
+    dataVectorPushString(buffer, "\n\n");
+
+    dataVectorPushString(buffer, "MYSTERY GIFT PATH:\n\n");
+    if (config.myg_path == NULL) dataVectorPushString(buffer, "NULL");
+    else {
+        int j = 0;
+        for (int i = 0; i < strlen(config.myg_path);) {
+            dataVectorPush(buffer, config.myg_path[i++]);
+            
+            j = i % path_char_max;
+            if (j == 0) {
+                dataVectorPush(buffer, '\n');
+            }
+        }
+    }
 
     return true;
 }
@@ -614,7 +653,15 @@ Opens up a file explorer to select a folder.
 @return full path of chosen folder.
 */
 char* explorerGetFolder(const char* title) {
-    return tinyfd_selectFolderDialog(title ? title : "Select folder", "/home");
+    char* path = tinyfd_selectFolderDialog(title ? title : "Select folder", "/home");
+    if (!path) return NULL;
+
+
+    char* return_buffer = (char*) calloc(strlen(path) + 1, sizeof(char));
+    if (!return_buffer) return NULL;
+    strcpy(return_buffer, path);
+
+    return return_buffer;
 }
 
 int main() {
@@ -630,6 +677,9 @@ int main() {
     char* text = NULL;
 
     Config config = generateConfig(config_path);
+
+    debugConfig(config);
+
     //Check for localhost
     #if defined(ENABLE_LOCALHOST)
     config.localhost = true;
@@ -721,19 +771,32 @@ int main() {
 
     Scene* config_menu = newScene();
     
-    Sprite* config_logo = newSprite(IMAGE, "assets/img/config_logo.png", 125, 0, IMAGE_SIZE_NATIVE, WHITE);
+    //Sprite* config_logo = newSprite(IMAGE, "assets/img/config_logo.png", 15, 50, IMAGE_SIZE_NATIVE, WHITE);
+    Sprite* config_view_select = newSprite(IMAGE, "assets/img/config_view_select.png", 140, 50, IMAGE_SIZE_NATIVE, WHITE);
     Sprite* config_return = newSprite(IMAGE, "assets/img/return.png", 1, 1, 50, 50, WHITE);
-    Sprite* config_info = newSprite(TEXT, "", 250, 200, TEXT_SIZE(20), BLACK); 
 
     //contains buttons for selecting which config to choose.
-    Sprite* config_country_select   = newSprite(IMAGE, "assets/img/config_country_select.png",     75, 150, 150, 150, WHITE);
-    Sprite* config_cert_path_select = newSprite(IMAGE, "assets/img/config_cert_path_select.png",   75, 300, 150, 150, WHITE);
-    Sprite* config_myg_path_select  = newSprite(IMAGE, "assets/img/config_myg_path_select.png",   75, 450, 150, 150, WHITE);
+    Sprite* config_country_select   = newSprite(IMAGE, "assets/img/config_country_select.png",     60, 175, 150, 75, WHITE);
+    Sprite* config_cert_path_select = newSprite(IMAGE, "assets/img/config_cert_path_select.png",   60, 275, 150, 75, WHITE);
+    Sprite* config_myg_path_select  = newSprite(IMAGE, "assets/img/config_myg_path_select.png",    60, 375, 150, 75, WHITE);
 
-    addScene(config_menu, config_logo);
+    //addScene(config_menu, config_logo);
+    addScene(config_menu, config_view_select);
     addScene(config_menu, config_return);
-    addScene(config_menu, config_info);
+
     addScene(config_menu, config_country_select);
+    addScene(config_menu, config_cert_path_select);
+    addScene(config_menu, config_myg_path_select);
+
+
+    Scene* config_view_menu = newScene();
+
+    Sprite* config_view_return = newSprite(IMAGE, "assets/img/return.png", 1, 1, 50, 50, WHITE);
+    Sprite* config_info = newSprite(TEXT, "", 50, 50, TEXT_SIZE(15), BLACK); 
+
+    addScene(config_view_menu, config_view_return);
+    addScene(config_view_menu, config_info);
+
 
     Scene* country_select_menu = newScene();
     
@@ -869,8 +932,10 @@ int main() {
                 textUpdate(main_error, " ");
                 //update the config info
                 dataVector config_info_buffer = dataVectorInit(128);
-                updateConfigText(config, config_info_buffer);
+                updateConfigText(config, &config_info_buffer);
                 textUpdate(config_info, config_info_buffer.data);
+
+                fprintf(stderr, "CONFIG NEW TEXT: %s\n", config_info_buffer.data);
 
                 if (config_info_buffer.data) free(config_info_buffer.data);
 
@@ -1240,15 +1305,57 @@ int main() {
             textUpdate(country_select_code, letter_buffer);
 
             imageHoveringChange(config_return, "assets/img/return_pressed.png", "assets/img/return.png");
+
+            imageHoveringChange(config_view_select, "assets/img/config_view_select_pressed.png", "assets/img/config_view_select.png");
+
             imageHoveringChange(config_country_select, "assets/img/config_country_select_pressed.png", "assets/img/config_country_select.png");
-            if (imageHovering(config_return) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) cur_scene = main_menu;
-            if (imageHovering(config_country_select) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                memset(letter_buffer, 0, sizeof(letter_buffer));
-                letter_count = 0;
-                textUpdate(country_select_code, letter_buffer);
-                cur_scene = country_select_menu;
-            } 
+            imageHoveringChange(config_cert_path_select, "assets/img/config_cert_path_select_pressed.png", "assets/img/config_cert_path_select.png");
+            imageHoveringChange(config_myg_path_select, "assets/img/config_myg_path_select_pressed.png", "assets/img/config_myg_path_select.png");
+            
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                if (imageHovering(config_return)) cur_scene = main_menu;
+                
+                if (imageHovering(config_view_select)) cur_scene = config_view_menu;
+
+                else if (imageHovering(config_country_select)) {
+                    memset(letter_buffer, 0, sizeof(letter_buffer));
+                    letter_count = 0;
+                    textUpdate(country_select_code, letter_buffer);
+                    cur_scene = country_select_menu;
+                } 
+
+                else if (imageHovering(config_cert_path_select)) {
+                    if (config.cert_path) free(config.cert_path);
+                    config.cert_path = explorerGetFolder("Select your Certificate Folder:");
+                    saveConfig(config, config_path);
+                    
+                    dataVector config_info_buffer = dataVectorInit(128);
+                    updateConfigText(config, &config_info_buffer);
+                    textUpdate(config_info, config_info_buffer.data);
+
+                    if (config_info_buffer.data) free(config_info_buffer.data);
+                } 
+                
+                else if (imageHovering(config_myg_path_select)) {
+                    if (config.myg_path) free(config.myg_path);
+                    config.myg_path = explorerGetFolder("Select your Mystery Gift Folder:");
+                    saveConfig(config, config_path);
+                    
+                    dataVector config_info_buffer = dataVectorInit(128);
+                    updateConfigText(config, &config_info_buffer);
+                    textUpdate(config_info, config_info_buffer.data);
+
+                    if (config_info_buffer.data) free(config_info_buffer.data);
+                } 
+            }
         }
+
+        else if (cur_scene == config_view_menu) {
+            imageHoveringChange(config_view_return, "assets/img/return_pressed.png", "assets/img/return.png");
+            
+            if (imageHovering(config_view_return) &&IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) cur_scene = config_menu;
+        }
+
         //config settings
         else if (cur_scene == country_select_menu) {
             //read keys, update the country code as reading, limit to two characters
@@ -1282,7 +1389,7 @@ int main() {
                     saveConfig(config, config_path);
                     
                     dataVector config_info_buffer = dataVectorInit(128);
-                    updateConfigText(config, config_info_buffer);
+                    updateConfigText(config, &config_info_buffer);
                     textUpdate(config_info, config_info_buffer.data);
 
                     if (config_info_buffer.data) free(config_info_buffer.data);

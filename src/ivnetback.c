@@ -1491,6 +1491,44 @@ int main(int argc, char** argv) {
         printf("IVnet:0:ENABLE_LOCALHOST comp flag not set.");
         return 1;
     }
+
+    //verify certificate path and files exist.
+
+    const char
+    *crt_name = "nwc.crt",
+    *key_name = "nwc.key";
+
+    if (localhost) {
+        if (!cert_path) {
+            printf("IVnet:0:certificate path not set.");
+            return 1;
+        }
+        //look for the file names
+        bool cert_found = false, key_found = false;
+
+        DIR* cert_dir = opendir(cert_path);
+        if (!cert_dir) {
+            printf("IVnet:0:could not open certificate folder.");
+            return 1;
+        }
+
+        struct dirent* dentry = NULL;
+
+        while ((dentry = readdir(cert_dir)) != NULL) {
+            if (strcmp(dentry->d_name, crt_name) == 0) cert_found = true;
+
+            if (strcmp(dentry->d_name, key_name) == 0) key_found = true;
+
+            if (key_found && cert_found) break;
+        }
+
+        closedir(cert_dir);
+
+        if (!key_found || !cert_found) {
+            printf("IVnet:0:no nwc.crt or nwc.key in cert folder.");
+            return 1;
+        }
+    }
     
 
 
@@ -1944,17 +1982,21 @@ int main(int argc, char** argv) {
         const int key_maxlen = crt_maxlen;
 
         char* crt = (char*) calloc(crt_maxlen, sizeof(char));
-        snprintf(crt, crt_maxlen, "%s/nwc.crt", cert_path);
+        if (crt) snprintf(crt, crt_maxlen, "%s/%s", cert_path, crt_name);
 
         char* key = (char*) calloc(key_maxlen, sizeof(char));
-        snprintf(key, key_maxlen, "%s/nwc.key", cert_path);
+        if (key) snprintf(key, key_maxlen, "%s/%s", cert_path, key_name);
 
+        bool chain_status = createLocalChain(crt, key);
+        if (crt) free(crt);
+        if (key) free(key);
 
-        // if (!createLocalChain("", "")) {
-        if (!createLocalChain(crt, key)) {
+        if (!chain_status) {
             printf("IVnet:0:could not create files needed for localhost");
             goto cleanup;
         }
+
+
 
         //Load chain file
         if (SSL_CTX_use_certificate_chain_file(ctx, "/tmp/ivnet/server.chain.crt") <= 0) {
