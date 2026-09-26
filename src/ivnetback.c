@@ -57,14 +57,15 @@ const char* PCN_HTTPS_PORT = "443";
 const char* PCN_RAWTCP_PORT = "29900";
 #endif
 
+#include "ivnet_flags.h"
 
-char* dongle       = NULL; const char* dongle_f       = "--nid"  ;
-char* DNS          = NULL; const char* DNS_f          = "--dns"  ;
-char* country_code = NULL; const char* country_code_f = "--ccode";
-char* SSID         = NULL; const char* SSID_f         = "--ssid" ;
+char* dongle       = NULL;
+char* DNS          = NULL;
+char* country_code = NULL;
+char* SSID         = NULL;
 
-char* cert_path    = NULL; const char* cert_path_f    = "--cert" ;
-char* myg_path     = NULL; const char* myg_path_f     = "--myg"  ;
+char* cert_path    = NULL;
+char* myg_path     = NULL;
 
 //Signal data for proper process-end cleanup
 volatile sig_atomic_t running = 1;
@@ -1385,7 +1386,7 @@ int main(int argc, char** argv) {
     */
 
     //Macro for argument checking
-    #define flagExists(flag, args, arg_index) (strcmp(args[arg_index], flag) == 0 && args[arg_index + 1])
+    #define flagExists(flag, args, arg_index) ((arg_index) + 1 < (argc) && strcmp((args)[(arg_index)], (flag)) == 0)
 
     for (int i = 1; i < argc; i++) {
         if (flagExists(dongle_f, argv, i)) {
