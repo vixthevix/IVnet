@@ -653,7 +653,14 @@ Opens up a file explorer to select a folder.
 @return full path of chosen folder.
 */
 char* explorerGetFolder(const char* title) {
-    char* path = tinyfd_selectFolderDialog(title ? title : "Select folder", "/home");
+    //Start in current working directory
+    
+    char cwd[1024] = {0};
+    if (getcwd(cwd, sizeof(cwd)) == NULL) {
+        cwd[0] = 0; //Set "empty"
+    }
+
+    char* path = tinyfd_selectFolderDialog(title ? title : "Select folder", cwd);
     if (!path) return NULL;
 
 
@@ -1102,10 +1109,17 @@ int main() {
                     strncpy(chosen_dns, choice, dash_index);
 
                     //Ensure that we can localhost.
-                    if (strcmp(chosen_dns, "0.0.0.0") == 0 && !config.localhost) {
-                        textUpdate(main_error, "Error: ENABLE_LOCALHOST comp flag not set.");
-                        cur_scene = main_menu;
-                        goto screen_display;
+                    if (strcmp(chosen_dns, "0.0.0.0") == 0) {
+                        if (!config.localhost) {
+                            textUpdate(main_error, "Error: ENABLE_LOCALHOST comp flag not set.");
+                            cur_scene = main_menu;
+                            goto screen_display;
+                        }
+                        else if (!config.cert_path) {
+                            textUpdate(main_error, "Error: Certificate path not set.");
+                            cur_scene = main_menu;
+                            goto screen_display;
+                        }
                     }
                     
                     //with a chosen NID and DNS, we can start the backend
@@ -1325,9 +1339,12 @@ int main() {
                 } 
 
                 else if (imageHovering(config_cert_path_select)) {
-                    if (config.cert_path) free(config.cert_path);
-                    config.cert_path = explorerGetFolder("Select your Certificate Folder:");
-                    saveConfig(config, config_path);
+                    char* cert_path = explorerGetFolder("Select your Certificate Folder:");
+                    if (cert_path) {
+                        if (config.cert_path) free(config.cert_path);
+                        config.cert_path = cert_path;
+                        saveConfig(config, config_path);
+                    }
                     
                     dataVector config_info_buffer = dataVectorInit(128);
                     updateConfigText(config, &config_info_buffer);
@@ -1336,10 +1353,13 @@ int main() {
                     if (config_info_buffer.data) free(config_info_buffer.data);
                 } 
                 
-                else if (imageHovering(config_myg_path_select)) {
-                    if (config.myg_path) free(config.myg_path);
-                    config.myg_path = explorerGetFolder("Select your Mystery Gift Folder:");
-                    saveConfig(config, config_path);
+                else if (imageHovering(config_myg_path_select)) {                
+                    char* myg_path = explorerGetFolder("Select your Mystery Gift Folder:");
+                    if (myg_path) {
+                        if (config.myg_path) free(config.myg_path);
+                        config.myg_path = myg_path;
+                        saveConfig(config, config_path);
+                    }
                     
                     dataVector config_info_buffer = dataVectorInit(128);
                     updateConfigText(config, &config_info_buffer);
