@@ -36,7 +36,7 @@ Visit https://github.com/vixthevix/IVnet for more info.
 #include <netinet/tcp.h>
 
 //OpenSSL 3.0 libraries and cottage
-#define ENABLE_LOCALHOST //TESTING DEFINITION
+//#define ENABLE_LOCALHOST //TESTING DEFINITION
 #if defined(ENABLE_LOCALHOST)
 #include <openssl/ssl.h>
 #include <openssl/err.h>
@@ -1477,7 +1477,22 @@ int main(int argc, char** argv) {
 
     if (!dongle || !DNS || !country_code || !SSID) {
         printf("IVnet:0:Not enough parameters\n");
-        perror("IVnet requires:\nname of NIC,\nDNS to connect to,\nISO 3166-1 alpha-2 country code,\nSSID to assign\n");
+        fprintf(stderr, 
+        "\n"
+        "ivnetback - Backend program for IVnet\n\n"
+        "=====================================\n\n"
+        "ARGUMENTS:\n"
+        "\nREQUIRED\n"
+        "     %s - Network Interface Device system name\n"
+        "     %s - DNS connection target\n"
+        "     %s - ISO 3166-1 alpha-2 country code\n"
+        "     %s - SSID to assign to access point\n"
+        "\nLOCALHOST\n"
+        "     %s - System path to HTTPS certificate file folder\n"
+        "     %s - System path to Mystery Gift .myg file folder\n"
+        "\nFor more info, visit https://github.com/vixthevix/IVnet\n\n",
+        dongle_f, DNS_f, country_code_f, SSID_f, cert_path_f, myg_path_f);
+
         return 1;
     }
     
@@ -2084,7 +2099,7 @@ int main(int argc, char** argv) {
         cleanLocalChain();
 
         #ifdef ENABLE_PROXY_DEBUG
-        FILE* proxy_output = fopen("/home/vixthevix/Documents/code/personal/IVnet/private/PROXY.debug", "w");
+        FILE* proxy_output = fopen("/tmp/ivnet/proxy.debug", "w");
         #endif
 
         char wait_buffer;

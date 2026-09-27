@@ -1,14 +1,24 @@
-#!/bin/env bash
+#!/usr/bin/env bash
 #we are compiling ivnet and ivnetback
 
-mkdir bin
+CC="gcc"
+SRC="src"
+BIN="bin"
+FRONTEND="ivnet"
+BACKEND="ivnetback"
+TFD="tinyfiledialogs/tinyfiledialogs"
+
+mkdir -p $BIN
 
 # Check if we want localhost features as well.
 
 if [[ -z "${ENABLE_LOCALHOST}" ]]; then # No localhost
     printf "Compiling normally...\n"
 
-    gcc src/ivnetback.c -o bin/ivnetback -lm
+    BACKEND_LINKS="-lm"
+    FRONTEND_LINKS="-lraylib -lGL -lm -lpthread -ldl -lrt -lX11"
+
+    $CC $SRC/$BACKEND.c -o $BIN/$BACKEND $BACKEND_LINKS 
     success=$?
 
     if [ $success -ne 0 ]; then
@@ -16,7 +26,7 @@ if [[ -z "${ENABLE_LOCALHOST}" ]]; then # No localhost
         exit
     fi
 
-    gcc src/ivnet.c src/tinyfiledialogs/tinyfiledialogs.c -o bin/ivnet -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
+    $CC $SRC/$FRONTEND.c $SRC/$TFD.c -o $BIN/$FRONTEND $FRONTEND_LINKS
     success=$?
 
     if [ $success -ne 0 ]; then
@@ -25,13 +35,32 @@ if [[ -z "${ENABLE_LOCALHOST}" ]]; then # No localhost
     fi
 else
     printf "Compiling with local server functionality...\n"    
-    #wget https://github.com/openssl/openssl/releases/download/openssl-3.0.22/openssl-3.0.22.tar.gz
-    #tar -xzf openssl-3.0.22.tar.gz
-    #cd openssl-3.0.22 && ./Configure enable-ssl3 enable-ssl3-method enable-weak-ssl-ciphers no-shared && make
 
-    #COPY AND PASTE FOR 1.1.1w
+    BACKEND_LINKS="-lm -lpthread -ldl"
+    OPENSSL="openssl-1.1.1w"
+    OPENSSL_SSL="libssl"
+    OPENSSL_CRYPTO="libcrypto"
+    OPENSSL_INCLUDE="include"
 
-    gcc -I./openssl-1.1.1w/include src/ivnetback.c ./openssl-1.1.1w/libssl.a ./openssl-1.1.1w/libcrypto.a -o bin/ivnetback -D ENABLE_LOCALHOST -lm -lpthread -ldl
+    OPENSSL_LINK="https://github.com/openssl/openssl/releases/download/OpenSSL_1_1_1w/openssl-1.1.1w.tar.gz"
+    OPENSSL_CONFIG="enable-ssl3 enable-ssl3-method enable-weak-ssl-ciphers no-shared"
+
+    FRONTEND_LINKS="-lraylib -lGL -lm -lpthread -ldl -lrt -lX11"
+
+    #before compiling backend, get openssl 1.1.1
+    #check if we have openssl first
+    if [[ ! -f "$SRC/$OPENSSL/$OPENSSL_SSL.a" || ! -f "$SRC/$OPENSSL/$OPENSSL_CRYPTO.a" ]]; then
+        echo "${OPENSSL} not found, building..."
+        (cd $SRC && wget $OPENSSL_LINK && tar -xzf $OPENSSL.tar.gz && rm $OPENSSL.tar.gz)
+        (cd $SRC/$OPENSSL && ./config $OPENSSL_CONFIG && make)
+    fi
+
+    #for backend, also check if we have the proxy debug mode enabled
+    if [[ -z "${ENABLE_PROXY_DEBUG}" ]]; then
+        $CC -I$SRC/$OPENSSL/$OPENSSL_INCLUDE $SRC/$BACKEND.c $SRC/$OPENSSL/$OPENSSL_SSL.a $SRC/$OPENSSL/$OPENSSL_CRYPTO.a -o $BIN/$BACKEND -D ENABLE_LOCALHOST $BACKEND_LINKS
+    else
+        $CC -I$SRC/$OPENSSL/$OPENSSL_INCLUDE $SRC/$BACKEND.c $SRC/$OPENSSL/$OPENSSL_SSL.a $SRC/$OPENSSL/$OPENSSL_CRYPTO.a -o $BIN/$BACKEND -D ENABLE_LOCALHOST -D ENABLE_PROXY_DEBUG $BACKEND_LINKS
+    fi
     success=$?
 
     if [ $success -ne 0 ]; then
@@ -39,7 +68,7 @@ else
         exit
     fi
 
-    gcc src/ivnet.c src/tinyfiledialogs/tinyfiledialogs.c -o bin/ivnet -D ENABLE_LOCALHOST -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
+    $CC $SRC/$FRONTEND.c $SRC/$TFD.c -o $BIN/$FRONTEND -D ENABLE_LOCALHOST $FRONTEND_LINKS
     success=$?
 
     if [ $success -ne 0 ]; then
