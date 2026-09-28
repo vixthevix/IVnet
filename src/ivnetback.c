@@ -67,6 +67,8 @@ char* SSID         = NULL;
 char* cert_path    = NULL;
 char* myg_path     = NULL;
 
+char* proxy_path   = NULL;
+
 //Signal data for proper process-end cleanup
 volatile sig_atomic_t running = 1;
 
@@ -426,6 +428,13 @@ void HTTP_manage(ServerConfig* server, int timeout) {
     }
 }
 
+/*
+Sub-function for handling DS authentication requests.
+@arg response -> input HttpResponse to build.
+@arg request -> HttpRequest to analyse.
+@arg payload_vars -> Nitro decoded stringMap of DS payload.
+@return response built succesfully.
+*/
 bool HTTPS_manage_auth(HttpResponse* response, HttpRequest request, stringMap* payload_vars) {
     if (
         (strMapGet(request.options, "Host")) && strcmp(strMapGet(request.options, "Host"), "nas.nintendowifi.net") == 0 &&
@@ -481,6 +490,13 @@ bool HTTPS_manage_auth(HttpResponse* response, HttpRequest request, stringMap* p
     return false;
 }
 
+/*
+Sub-function for handling DS Mystery Gift requests.
+@arg response -> input HttpResponse to build.
+@arg request -> HttpRequest to analyse.
+@arg payload_vars -> Nitro decoded stringMap of DS payload.
+@return response built succesfully.
+*/
 bool HTTPS_manage_myg(HttpResponse* response, HttpRequest request, stringMap* payload_vars) {
     //constants for mystery gift
     const char* svchost = "local.ivnet.net";
@@ -921,7 +937,6 @@ void HTTPS_manage(ServerConfig* server, int timeout, SSL_CTX* ctx) {
 }
 #endif
 
-
 #ifdef ENABLE_PROXY_DEBUG
 
 /*
@@ -930,10 +945,10 @@ Debug function for capturing HTTP packets sent by the DS.
 @arg timeout -> polling timeout limit.
 @arg output -> stream to print to.
 */
-void HTTP_proxy(ServerConfig* server, int timeout, FILE** output) {
-    if (!server || !output || !(*output)) {
+void HTTP_proxy(ServerConfig* server, int timeout, FILE* output) {
+    if (!server) {
         fprintf(stderr, "HTTP_proxy arguments invalid.\n");
-        fprintf(*output, "HTTP_proxy arguments invalid.\n");
+        if (output) fprintf(output, "HTTP_proxy arguments invalid.\n");
         return;
     } 
     
@@ -949,20 +964,20 @@ void HTTP_proxy(ServerConfig* server, int timeout, FILE** output) {
         else {
             //existing client
             fprintf(stderr, "----------HTTP PROXY DEBUG START----------\n\n");
-            fprintf(*output, "----------HTTP PROXY DEBUG START----------\n\n");
+            if (output) fprintf(output, "----------HTTP PROXY DEBUG START----------\n\n");
             
             int bytes = 0;
             char* client_offload = serverRecvClient(cur_fd, &bytes);
             if (client_offload) {
                 fprintf(stderr, "----------DS HTTP REQUEST START----------\n\n%s\n\n----------DS HTTP REQUEST END----------\n\n", client_offload);
-                fprintf(*output, "----------DS HTTP REQUEST START----------\n\n%s\n\n----------DS HTTP REQUEST END----------\n\n", client_offload);
+                if (output) fprintf(output, "----------DS HTTP REQUEST START----------\n\n%s\n\n----------DS HTTP REQUEST END----------\n\n", client_offload);
             }
             else {
                 fprintf(stderr, "NO DS MESSAGE FOUND\n\n");
-                fprintf(*output, "NO DS MESSAGE FOUND\n\n");
+                if (output) fprintf(output, "NO DS MESSAGE FOUND\n\n");
             }
             fprintf(stderr, "----------HTTP PROXY DEBUG END----------\n\n");
-            fprintf(*output, "----------HTTP PROXY DEBUG END----------\n\n");
+            if (output) fprintf(output, "----------HTTP PROXY DEBUG END----------\n\n");
             
 
             //Default HTTP response code.
@@ -981,8 +996,7 @@ void HTTP_proxy(ServerConfig* server, int timeout, FILE** output) {
                 HttpResponseAddOption(&response, "Server", "BigIp");
                 HttpResponseAddOption(&response, "Content-length", "2");
                 
-                response.payload = (char*) calloc(3, sizeof(char));
-                strcpy(response.payload, "ok");
+                HttpResponseAddPayload(&response, "ok", strlen("ok"));
 
                 sendCustom(response, cur_fd);
             }
@@ -1003,10 +1017,10 @@ the Pokemon Classic Network.
 @arg ctx -> OpenSSL Context for verifying packets.
 @arg output -> stream to print to.
 */
-void HTTPS_proxy(ServerConfig* server, int timeout, SSL_CTX* ctx, FILE** output) {
-    if (!server || !ctx || !output || !(*output)) {
+void HTTPS_proxy(ServerConfig* server, int timeout, SSL_CTX* ctx, FILE* output) {
+    if (!server || !ctx) {
         fprintf(stderr, "HTTPS_proxy arguments invalid.\n");
-        fprintf(*output, "HTTPS_proxy arguments invalid.\n");
+        if (output) fprintf(output, "HTTPS_proxy arguments invalid.\n");
         return;
     } 
     
@@ -1022,7 +1036,7 @@ void HTTPS_proxy(ServerConfig* server, int timeout, SSL_CTX* ctx, FILE** output)
         else {
             //existing client
             fprintf(stderr, "----------HTTPS PROXY DEBUG START----------\n\n");
-            fprintf(*output, "----------HTTPS PROXY DEBUG START----------\n\n");
+            if (output) fprintf(output, "----------HTTPS PROXY DEBUG START----------\n\n");
 
             //Ensure we send whole packets, instead of Linux default waiting
             int nodelay_flag = 1;
@@ -1045,7 +1059,7 @@ void HTTPS_proxy(ServerConfig* server, int timeout, SSL_CTX* ctx, FILE** output)
                     struct pollfd ssl_pfd = {.fd = cur_fd, .events=POLLIN};
                     if (poll(&ssl_pfd, 1, ssl_accept_timeout) <= 0) {
                         fprintf(stderr, "HANDSHAKE READ TIMEOUT\n");
-                        fprintf(*output, "HANDSHAKE READ TIMEOUT\n");
+                        if (output) fprintf(output, "HANDSHAKE READ TIMEOUT\n");
                         break;
                     }
                 }
@@ -1054,7 +1068,7 @@ void HTTPS_proxy(ServerConfig* server, int timeout, SSL_CTX* ctx, FILE** output)
                     struct pollfd ssl_pfd = {.fd = cur_fd, .events=POLLOUT};
                     if (poll(&ssl_pfd, 1, ssl_accept_timeout) <= 0) {
                         fprintf(stderr, "HANDSHAKE WRITE TIMEOUT\n");
-                        fprintf(*output, "HANDSHAKE WRITE TIMEOUT\n");
+                        if (output) fprintf(output, "HANDSHAKE WRITE TIMEOUT\n");
                         break;
                     }
                 }
@@ -1062,7 +1076,7 @@ void HTTPS_proxy(ServerConfig* server, int timeout, SSL_CTX* ctx, FILE** output)
                     //Actual error
                     ERR_print_errors_fp(stderr);
                     fprintf(stderr, "HANDSHAKE FAILED, CODE: %i\n", ssl_err);
-                    fprintf(*output, "HANDSHAKE FAILED, CODE: %i\n", ssl_err);
+                    if (output) fprintf(output, "HANDSHAKE FAILED, CODE: %i\n", ssl_err);
                     break;
                 }
             }
@@ -1091,11 +1105,11 @@ void HTTPS_proxy(ServerConfig* server, int timeout, SSL_CTX* ctx, FILE** output)
                 //Log the DS output in plain text
                 if (bytes > 0) {
                     fprintf(stderr, "----------DS HTTPS REQUEST START----------\n\n%s\n\n----------DS HTTPS REQUEST END----------\n\n", client_offload);
-                    fprintf(*output, "----------DS HTTPS REQUEST START----------\n\n%s\n\n----------DS HTTPS REQUEST END----------\n\n", client_offload);
+                    if (output) fprintf(output, "----------DS HTTPS REQUEST START----------\n\n%s\n\n----------DS HTTPS REQUEST END----------\n\n", client_offload);
                 }
                 else {
                     fprintf(stderr, "NO ENCRYPTED DS MESSAGE FOUND\n\n");
-                    fprintf(*output, "NO ENCRYPTED DS MESSAGE FOUND\n\n");
+                    if (output) fprintf(output, "NO ENCRYPTED DS MESSAGE FOUND\n\n");
                 }
 
                 //Deal with ilostmymind.xyz
@@ -1115,7 +1129,7 @@ void HTTPS_proxy(ServerConfig* server, int timeout, SSL_CTX* ctx, FILE** output)
                 pcn_status = getaddrinfo(target_ip, PCN_HTTPS_PORT, &pcn_hints, &pcn_servinfo);
                 if (pcn_status != 0) {
                     fprintf(stderr, "PCN GETADDRINFO FAILED:\n%s\n\n", gai_strerror(pcn_status));
-                    fprintf(*output, "PCN GETADDRINFO FAILED:\n%s\n\n", gai_strerror(pcn_status));
+                    if (output) fprintf(output, "PCN GETADDRINFO FAILED:\n%s\n\n", gai_strerror(pcn_status));
                     goto cleanup;
                 }
 
@@ -1123,7 +1137,7 @@ void HTTPS_proxy(ServerConfig* server, int timeout, SSL_CTX* ctx, FILE** output)
                 if (pcn_fd <= -1) {
                     freeaddrinfo(pcn_servinfo);
                     fprintf(stderr, "PCN SOCKET FAILED\n\n");
-                    fprintf(*output, "PCN SOCKET FAILED\n\n");
+                    if (output) fprintf(output, "PCN SOCKET FAILED\n\n");
                     goto cleanup;
                 }
 
@@ -1132,7 +1146,7 @@ void HTTPS_proxy(ServerConfig* server, int timeout, SSL_CTX* ctx, FILE** output)
                     close(pcn_fd);
                     freeaddrinfo(pcn_servinfo);
                     fprintf(stderr, "PCN CONNECT FAILED\n\n");
-                    fprintf(*output, "PCN CONNECT FAILED\n\n");
+                    if (output) fprintf(output, "PCN CONNECT FAILED\n\n");
                     goto cleanup;
                 }
 
@@ -1158,7 +1172,7 @@ void HTTPS_proxy(ServerConfig* server, int timeout, SSL_CTX* ctx, FILE** output)
                     close(pcn_fd);
                     freeaddrinfo(pcn_servinfo);
                     fprintf(stderr, "PCN HANDSHAKE FAILED\n\n");
-                    fprintf(*output, "PCN HANDSHAKE FAILED\n\n");
+                    if (output) fprintf(output, "PCN HANDSHAKE FAILED\n\n");
                     goto cleanup;
                 }
 
@@ -1175,12 +1189,18 @@ void HTTPS_proxy(ServerConfig* server, int timeout, SSL_CTX* ctx, FILE** output)
                 //Listen to PCN's response and log it.
                 memset(client_offload, 0, sizeof(client_offload));
                 int pcn_total_bytes = 0;
-                while ((bytes = SSL_read(pcn_ssl, client_offload + pcn_total_bytes, sizeof(client_offload) - 1)) > 0) {
-                    pcn_total_bytes += bytes;
+
+                while (pcn_total_bytes < sizeof(client_offload) - 1) {
+                    int pcn_cur_space = sizeof(client_offload) - 1 - pcn_total_bytes;
+                    bytes = SSL_read(pcn_ssl, client_offload + pcn_total_bytes, pcn_cur_space);
+
+                    if (bytes > 0) pcn_total_bytes += bytes;
+                    else break;
+
                 }
                 if (pcn_total_bytes > 0) {
                     fprintf(stderr, "----------PCN HTTPS RESPONSE START----------\n\n%s\n\n----------PCN HTTPS RESPONSE END----------\n\n", client_offload);
-                    fprintf(*output, "----------PCN HTTPS RESPONSE START----------\n\n%s\n\n----------PCN HTTPS RESPONSE END----------\n\n", client_offload);
+                    if (output) fprintf(output, "----------PCN HTTPS RESPONSE START----------\n\n%s\n\n----------PCN HTTPS RESPONSE END----------\n\n", client_offload);
                     
                     //CAPTURE THE MYG FILE (for IVgift analysis)
                     if (strstr(client_offload, "filename") != NULL) {
@@ -1223,7 +1243,7 @@ void HTTPS_proxy(ServerConfig* server, int timeout, SSL_CTX* ctx, FILE** output)
                         pcn_cur_bytes += written;
                     }
                     fprintf(stderr, "PROXY DELIVERED %d / %d BYTES\n\n", pcn_cur_bytes, pcn_total_bytes);
-                    fprintf(*output, "PROXY DELIVERED %d / %d BYTES\n\n", pcn_cur_bytes, pcn_total_bytes);
+                    if (output) fprintf(output, "PROXY DELIVERED %d / %d BYTES\n\n", pcn_cur_bytes, pcn_total_bytes);
                     
                     //Shutdown gracefully.
                     int shutdown_ret = SSL_shutdown(ssl);
@@ -1243,7 +1263,7 @@ void HTTPS_proxy(ServerConfig* server, int timeout, SSL_CTX* ctx, FILE** output)
                 }
                 else {
                     fprintf(stderr, "PCN NO MESSAGE\n\n");
-                    fprintf(*output, "PCN NO MESSAGE\n\n");
+                    if (output) fprintf(output, "PCN NO MESSAGE\n\n");
                 }
 
                 //Cleanup PCN SSL
@@ -1255,7 +1275,7 @@ void HTTPS_proxy(ServerConfig* server, int timeout, SSL_CTX* ctx, FILE** output)
 
             cleanup:
             fprintf(stderr, "----------HTTPS PROXY DEBUG END----------\n\n");
-            fprintf(*output, "----------HTTPS PROXY DEBUG END----------\n\n");
+            if (output) fprintf(output, "----------HTTPS PROXY DEBUG END----------\n\n");
             SSL_shutdown(ssl);
             SSL_free(ssl);
             CotPollPop(server->poll, cur_fd);
@@ -1271,10 +1291,10 @@ the Pokemon Classic Network.
 @arg timeout -> polling timeout limit.
 @arg output -> stream to print to.
 */
-void RAWTCP_proxy(ServerConfig* server, int timeout, FILE** output) {
-    if (!server || !output || !(*output)) {
+void RAWTCP_proxy(ServerConfig* server, int timeout, FILE* output) {
+    if (!server) {
         fprintf(stderr, "HTTP_proxy arguments invalid.\n");
-        fprintf(*output, "HTTP_proxy arguments invalid.\n");
+        if (output) fprintf(output, "HTTP_proxy arguments invalid.\n");
         return;
     }
 
@@ -1295,7 +1315,7 @@ void RAWTCP_proxy(ServerConfig* server, int timeout, FILE** output) {
             //Update links
             ds_fd = client_fd;
             fprintf(stderr, "///////RAWTCP PROXY CONNECTION STARTED/////////\n\n");
-            fprintf(*output, "///////RAWTCP PROXY CONNECTION STARTED/////////\n\n");
+            if (output) fprintf(output, "///////RAWTCP PROXY CONNECTION STARTED/////////\n\n");
             
             //Set up a new PCN socket.
             int pcn_status = 0;
@@ -1309,7 +1329,7 @@ void RAWTCP_proxy(ServerConfig* server, int timeout, FILE** output) {
             pcn_status = getaddrinfo(PCN_IP, PCN_RAWTCP_PORT, &pcn_hints, &pcn_servinfo);
             if (pcn_status != 0) {
                 fprintf(stderr, "PCN GETADDRINFO FAILED:\n%s\n\n", gai_strerror(pcn_status));
-                fprintf(*output, "PCN GETADDRINFO FAILED:\n%s\n\n", gai_strerror(pcn_status));
+                if (output) fprintf(output, "PCN GETADDRINFO FAILED:\n%s\n\n", gai_strerror(pcn_status));
                 CotPollPop(server->poll, ds_fd);
                 close(ds_fd);
                 continue;
@@ -1319,7 +1339,7 @@ void RAWTCP_proxy(ServerConfig* server, int timeout, FILE** output) {
             if (pcn_fd <= -1) {
                 freeaddrinfo(pcn_servinfo);
                 fprintf(stderr, "PCN SOCKET FAILED\n\n");
-                fprintf(*output, "PCN SOCKET FAILED\n\n");
+                if (output) fprintf(output, "PCN SOCKET FAILED\n\n");
                 CotPollPop(server->poll, ds_fd);
                 close(ds_fd);
                 continue;
@@ -1330,10 +1350,9 @@ void RAWTCP_proxy(ServerConfig* server, int timeout, FILE** output) {
                 close(pcn_fd);
                 freeaddrinfo(pcn_servinfo);
                 fprintf(stderr, "PCN CONNECT FAILED\n\n");
-                fprintf(*output, "PCN CONNECT FAILED\n\n");
+                if (output) fprintf(output, "PCN CONNECT FAILED\n\n");
                 CotPollPop(server->poll, ds_fd);
                 close(ds_fd);
-                close(pcn_fd);
                 continue;
             }
 
@@ -1341,12 +1360,12 @@ void RAWTCP_proxy(ServerConfig* server, int timeout, FILE** output) {
             CotPollPush(server->poll, pcn_fd);
 
             fprintf(stderr, "///////RAWTCP PROXY PCN STARTED/////////\n\n");
-            fprintf(*output, "///////RAWTCP PROXY PCN STARTED/////////\n\n");
+            if (output) fprintf(output, "///////RAWTCP PROXY PCN STARTED/////////\n\n");
         }
         else {
             //existing client
             fprintf(stderr, "----------RAWTCP PROXY DEBUG START----------\n\n");
-            fprintf(*output, "----------RAWTCP PROXY DEBUG START----------\n\n");
+            if (output) fprintf(output, "----------RAWTCP PROXY DEBUG START----------\n\n");
             
 
             int bytes = 0;
@@ -1356,14 +1375,14 @@ void RAWTCP_proxy(ServerConfig* server, int timeout, FILE** output) {
             if (cur_fd == ds_fd) {
                 if (client_offload) {
                     fprintf(stderr, "----------DS RAWTCP REQUEST START----------\n\n%s\n\n----------DS RAWTCP REQUEST END----------\n\n", client_offload);
-                    fprintf(*output, "----------DS RAWTCP REQUEST START----------\n\n%s\n\n----------DS RAWTCP REQUEST END----------\n\n", client_offload);
+                    if (output) fprintf(output, "----------DS RAWTCP REQUEST START----------\n\n%s\n\n----------DS RAWTCP REQUEST END----------\n\n", client_offload);
                 
                     //Forward to PCN
                     send(pcn_fd, client_offload, bytes, 0);
                 }
                 else {
                     fprintf(stderr, "NO DS MESSAGE FOUND\n\n");
-                    fprintf(*output, "NO DS MESSAGE FOUND\n\n");
+                    if (output) fprintf(output, "NO DS MESSAGE FOUND\n\n");
                     
                     //Close the connection.
                     CotPollPop(server->poll, ds_fd);
@@ -1375,14 +1394,14 @@ void RAWTCP_proxy(ServerConfig* server, int timeout, FILE** output) {
             else if (cur_fd == pcn_fd) {
                 if (client_offload) {
                     fprintf(stderr, "----------PCN RAWTCP REQUEST START----------\n\n%s\n\n----------PCN RAWTCP REQUEST END----------\n\n", client_offload);
-                    fprintf(*output, "----------PCN RAWTCP REQUEST START----------\n\n%s\n\n----------PCN RAWTCP REQUEST END----------\n\n", client_offload);
+                    if (output) fprintf(output, "----------PCN RAWTCP REQUEST START----------\n\n%s\n\n----------PCN RAWTCP REQUEST END----------\n\n", client_offload);
                 
                     //Forward to DS
                     send(ds_fd, client_offload, bytes, 0);
                 }
                 else {
                     fprintf(stderr, "NO PCN MESSAGE FOUND\n\n");
-                    fprintf(*output, "NO PCN MESSAGE FOUND\n\n");
+                    if (output) fprintf(output, "NO PCN MESSAGE FOUND\n\n");
                 
                     //Close the connection.
                     CotPollPop(server->poll, ds_fd);
@@ -1394,7 +1413,7 @@ void RAWTCP_proxy(ServerConfig* server, int timeout, FILE** output) {
 
 
             fprintf(stderr, "----------RAWTCP PROXY DEBUG END----------\n\n");
-            fprintf(*output, "----------RAWTCP PROXY DEBUG END----------\n\n");
+            if (output) fprintf(output, "----------RAWTCP PROXY DEBUG END----------\n\n");
             
 
             if (client_offload) free(client_offload);
@@ -1473,6 +1492,10 @@ int main(int argc, char** argv) {
         else if (flagExists(myg_path_f, argv, i)) {
             myg_path = argv[++i];
         }
+
+        else if (flagExists(proxy_path_f, argv, i)) {
+            proxy_path = argv[++i];
+        }
     }
 
     if (!dongle || !DNS || !country_code || !SSID) {
@@ -1490,8 +1513,10 @@ int main(int argc, char** argv) {
         "\nLOCALHOST\n"
         "     %s - System path to HTTPS certificate file folder\n"
         "     %s - System path to Mystery Gift .myg file folder\n"
-        "\nFor more info, visit https://github.com/vixthevix/IVnet\n\n",
-        dongle_f, DNS_f, country_code_f, SSID_f, cert_path_f, myg_path_f);
+        "\nPROXY_DEBUG\n"
+        "     %s - System path to output of captured HTTP/HTTPS/TCP packets\n"
+        "\nFor more info, visit https://github.com/vixthevix/IVnet \n\n",
+        dongle_f, DNS_f, country_code_f, SSID_f, cert_path_f, myg_path_f, proxy_path_f);
 
         return 1;
     }
@@ -2099,7 +2124,8 @@ int main(int argc, char** argv) {
         cleanLocalChain();
 
         #ifdef ENABLE_PROXY_DEBUG
-        FILE* proxy_output = fopen("/tmp/ivnet/proxy.debug", "w");
+        FILE* proxy_output = NULL;
+        if (proxy_path) proxy_output = fopen(proxy_path, "w");
         #endif
 
         char wait_buffer;
@@ -2116,8 +2142,8 @@ int main(int argc, char** argv) {
             HTTP_manage(server_http, timeout);
             HTTPS_manage(server_https, timeout, ctx);
             #else
-            HTTP_proxy(server_http, timeout, &proxy_output);
-            HTTPS_proxy(server_https, timeout, ctx, &proxy_output);
+            HTTP_proxy(server_http, timeout, proxy_output);
+            HTTPS_proxy(server_https, timeout, ctx, proxy_output);
             //RAWTCP_proxy(server_rawtcp, timeout, &proxy_output);
             #endif
             //check if dnsmasq or hostapd have failed
@@ -2137,7 +2163,7 @@ int main(int argc, char** argv) {
         }
 
         #ifdef ENABLE_PROXY_DEBUG
-        fclose(proxy_output);
+        if (proxy_output) fclose(proxy_output);
         #endif
 
         #endif

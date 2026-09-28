@@ -466,10 +466,11 @@ bool updateNIC(char nic_list[256][75], uint32_t* nic_count) {
 /*
 Struct to hold user saved information for all sessions.
 In the format:
-    country_code     -> stores IEEE 802.11d code 
-    localhost        -> stores if IVnet can perform local server hosting.
-    certificate path -> stores the path to https certificates, used in localhost.
-    myg path         -> stores the path to mystery gifts, used in localhost.
+    country_code       -> stores IEEE 802.11d code 
+    localhost          -> stores if IVnet can perform local server hosting.
+    certificate path   -> stores the path to https certificates, used in localhost.
+    myg path           -> stores the path to mystery gifts, used in localhost.
+    proxy path         -> stores the path to proxy debug output, used in localhost and proxy debug.
     END
 */
 typedef struct Config {
@@ -477,6 +478,7 @@ typedef struct Config {
     bool localhost;
     char* cert_path;
     char* myg_path;
+    char* proxy_path;
 } Config;
 
 /*
@@ -541,6 +543,15 @@ Config generateConfig(const char* path) {
                 if (config.myg_path) strncpy(config.myg_path, vector.data, vector.index);
                 break;
             }
+            case 3: { //POXY Path
+                if (vector.index == 0) { //Nothing was written
+                    config.proxy_path = NULL;
+                    break;
+                }
+                config.proxy_path = (char*) calloc(vector.index + 1, sizeof(char));
+                if (config.proxy_path) strncpy(config.proxy_path, vector.data, vector.index);
+                break;
+            }
         }
 
         //Reset the dataVector
@@ -569,10 +580,11 @@ bool saveConfig(Config config, const char* path) {
     if (!file) return false;
 
     //build up a buffer and write it
-    fprintf(file, "%s\n%s\n%s", 
+    fprintf(file, "%s\n%s\n%s\n%s", 
         config.country_code,
-        config.cert_path ? config.cert_path : "",
-        config.myg_path  ? config.myg_path  : ""
+        config.cert_path  ? config.cert_path  : "",
+        config.myg_path   ? config.myg_path   : "",
+        config.proxy_path ? config.proxy_path : ""
     );
     fclose(file);
 
@@ -589,8 +601,9 @@ void debugConfig(Config config) {
     "COUNTRY CODE: %s\n"
     "LOCALHOST: %s\n"
     "CERT PATH: %s\n"
-    "MYG PATH: %s\n",
-    config.country_code, config.localhost ? "true" : "false", config.cert_path, config.myg_path);
+    "MYG PATH: %s\n"
+    "PROXY PATH: %s\n",
+    config.country_code, config.localhost ? "true" : "false", config.cert_path, config.myg_path, config.proxy_path);
 }
 
 /*
@@ -643,6 +656,21 @@ bool updateConfigText(Config config, dataVector* buffer) {
             }
         }
     }
+    dataVectorPushString(buffer, "\n\n");
+
+    dataVectorPushString(buffer, "PROXY OUTPUT PATH:\n\n");
+    if (config.proxy_path == NULL) dataVectorPushString(buffer, "NULL");
+    else {
+        int j = 0;
+        for (int i = 0; i < strlen(config.proxy_path);) {
+            dataVectorPush(buffer, config.proxy_path[i++]);
+            
+            j = i % path_char_max;
+            if (j == 0) {
+                dataVectorPush(buffer, '\n');
+            }
+        }
+    }
 
     return true;
 }
@@ -661,6 +689,30 @@ char* explorerGetFolder(const char* title) {
     }
 
     char* path = tinyfd_selectFolderDialog(title ? title : "Select folder", cwd);
+    if (!path) return NULL;
+
+
+    char* return_buffer = (char*) calloc(strlen(path) + 1, sizeof(char));
+    if (!return_buffer) return NULL;
+    strcpy(return_buffer, path);
+
+    return return_buffer;
+}
+
+/*
+Opens up a file explorer to select a file.
+@arg title -> name of file explorer window title.
+@return full path of chosen file.
+*/
+char* explorerGetFile(const char* title) {
+    //Start in current working directory
+    
+    char cwd[1024] = {0};
+    if (getcwd(cwd, sizeof(cwd)) == NULL) {
+        cwd[0] = 0; //Set "empty"
+    }
+
+    char* path = tinyfd_openFileDialog(title ? title : "Select file", cwd, 0, NULL, NULL, 0);
     if (!path) return NULL;
 
 
@@ -783,9 +835,11 @@ int main() {
     Sprite* config_return = newSprite(IMAGE, "assets/img/return.png", 1, 1, 50, 50, WHITE);
 
     //contains buttons for selecting which config to choose.
-    Sprite* config_country_select   = newSprite(IMAGE, "assets/img/config_country_select.png",     60, 175, 150, 75, WHITE);
-    Sprite* config_cert_path_select = newSprite(IMAGE, "assets/img/config_cert_path_select.png",   60, 275, 150, 75, WHITE);
-    Sprite* config_myg_path_select  = newSprite(IMAGE, "assets/img/config_myg_path_select.png",    60, 375, 150, 75, WHITE);
+    Sprite* config_country_select     = newSprite(IMAGE, "assets/img/config_country_select.png",       60, 175, 150, 75, WHITE);
+    Sprite* config_cert_path_select   = newSprite(IMAGE, "assets/img/config_cert_path_select.png",     60, 275, 150, 75, WHITE);
+    Sprite* config_myg_path_select    = newSprite(IMAGE, "assets/img/config_myg_path_select.png",      60, 375, 150, 75, WHITE);
+    Sprite* config_proxy_path_select  = newSprite(IMAGE, "assets/img/config_proxy_path_select.png",    280, 175, 150, 75, WHITE);
+
 
     //addScene(config_menu, config_logo);
     addScene(config_menu, config_view_select);
@@ -794,6 +848,7 @@ int main() {
     addScene(config_menu, config_country_select);
     addScene(config_menu, config_cert_path_select);
     addScene(config_menu, config_myg_path_select);
+    addScene(config_menu, config_proxy_path_select);
 
 
     Scene* config_view_menu = newScene();
@@ -1162,6 +1217,9 @@ int main() {
                             myg_path_f,
                             config.myg_path,
                             
+                            proxy_path_f,
+                            config.proxy_path,
+
                             NULL,
                         };
                         execvp("pkexec", backend_args);
@@ -1325,7 +1383,8 @@ int main() {
             imageHoveringChange(config_country_select, "assets/img/config_country_select_pressed.png", "assets/img/config_country_select.png");
             imageHoveringChange(config_cert_path_select, "assets/img/config_cert_path_select_pressed.png", "assets/img/config_cert_path_select.png");
             imageHoveringChange(config_myg_path_select, "assets/img/config_myg_path_select_pressed.png", "assets/img/config_myg_path_select.png");
-            
+            imageHoveringChange(config_proxy_path_select, "assets/img/config_proxy_path_select_pressed.png", "assets/img/config_proxy_path_select.png");
+
             if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                 if (imageHovering(config_return)) cur_scene = main_menu;
                 
@@ -1367,6 +1426,21 @@ int main() {
 
                     if (config_info_buffer.data) free(config_info_buffer.data);
                 } 
+
+                else if (imageHovering(config_proxy_path_select)) {                
+                    char* proxy_path = explorerGetFile("Select your Proxy Output file:");
+                    if (proxy_path) {
+                        if (config.proxy_path) free(config.proxy_path);
+                        config.proxy_path = proxy_path;
+                        saveConfig(config, config_path);
+                    }
+                    
+                    dataVector config_info_buffer = dataVectorInit(128);
+                    updateConfigText(config, &config_info_buffer);
+                    textUpdate(config_info, config_info_buffer.data);
+
+                    if (config_info_buffer.data) free(config_info_buffer.data);
+                }
             }
         }
 

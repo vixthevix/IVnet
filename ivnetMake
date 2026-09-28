@@ -8,10 +8,33 @@ FRONTEND="ivnet"
 BACKEND="ivnetback"
 TFD="tinyfiledialogs/tinyfiledialogs"
 
+
+# Check if help requested
+if [[ "$#" -ne 0 && $1 == "-h" ]]; then
+    
+    echo
+    echo "IVnet - Connect your Generation IV Pokemon games to the Internet!"
+    echo
+    echo "================================================================="
+    echo
+    echo "To build normally, run './ivnetMake' or 'bash ivnetMake'"
+    echo
+    echo "================================================================="
+    echo
+    echo "OPTIONAL ENV PARAMETERS"
+    echo "     ENABLE_LOCALHOST   - Builds with additional functionality for hosting a local server"
+    echo "     ENABLE_PROXY_DEBUG - Builds with additional functionality for acting as a proxy between"
+    echo "                          the DS and the Pokemon Classic Network (requires ENABLE_LOCALHOST)"
+    echo
+    echo "For more info, visit https://github.com/vixthevix/IVnet"
+    echo
+
+    exit
+fi
+
 mkdir -p $BIN
 
 # Check if we want localhost features as well.
-
 if [[ -z "${ENABLE_LOCALHOST}" ]]; then # No localhost
     printf "Compiling normally...\n"
 
@@ -77,5 +100,5 @@ else
     fi
 fi
 
-printf "\nIVnet successfully compiled!\nRun 'bash ivnetRun' or 'bin/ivnet' to begin\n"
-printf "To run just the backend, run 'bin/ivnetback'\n"
+printf "\nIVnet successfully compiled!\nRun './ivnetRun', 'bash ivnetRun' or 'bin/ivnet' to begin\n"
+printf "To run just the backend, run 'sudo bin/ivnetback'\n"
