@@ -17,6 +17,16 @@ Visit https://github.com/vixthevix/IVnet for more info.
 #include <sys/wait.h>
 #include <errno.h>
 
+//Shared flag names with backend
+#include "ivnet_flags.h"
+
+//File explorer pop up
+#include "tinyfiledialogs/tinyfiledialogs.h"
+
+//Include cottage for the dataVector object
+#define COTTAGE_START
+#include "cottage/cottage.h"
+
 //Default font data to be used for all text.
 Font font; 
 const float font_spacing = 2.0f;
@@ -419,7 +429,6 @@ bool freeScene(Scene* scene) {
 
     for (uint32_t i = 0; i < scene->len; i++) {
         bool status = freeSprite(scene->sprites[i]);
-        //if (!status) printf("Could not free sprite #%u of current scene\n", i);
     }
 
     free(scene->sprites);
@@ -457,11 +466,19 @@ bool updateNIC(char nic_list[256][75], uint32_t* nic_count) {
 /*
 Struct to hold user saved information for all sessions.
 In the format:
-    country_code -> stores IEEE 802.11d code 
+    country_code       -> stores IEEE 802.11d code 
+    localhost          -> stores if IVnet can perform local server hosting.
+    certificate path   -> stores the path to https certificates, used in localhost.
+    myg path           -> stores the path to mystery gifts, used in localhost.
+    proxy path         -> stores the path to proxy debug output, used in localhost and proxy debug.
     END
 */
 typedef struct Config {
     char country_code[3];
+    bool localhost;
+    char* cert_path;
+    char* myg_path;
+    char* proxy_path;
 } Config;
 
 /*
@@ -479,23 +496,75 @@ Config generateConfig(const char* path) {
         file = fopen(path, "w");
         if (!file) return config;
         fclose(file);
-        //if created, go back to reading it.
+        //open file for file reading
         file = fopen(path, "r");
         if (!file) return config;
     }
 
-    //read line by line.
+    //Read file
+    //Due to paths being available in the config now, we must have a dynamic buffer.
     int line = 0;
-    char buffer[100] = {0};
-    while ((fgets(buffer, sizeof(buffer), file)) != NULL) {
-        if (buffer[strlen(buffer)] == '\n') buffer[strlen(buffer)] = 0; //remove newline
-        if (line == 0) { // Country Code
-            strcpy(config.country_code, buffer);
+    char c = 0;
+    dataVector vector = dataVectorInit(128);
+    while (true) {
+        c = fgetc(file);
+
+        if (c != '\n' && c != EOF) {
+            dataVectorPush(&vector, c);
+            continue;
         }
-        memset(buffer, 0, 100);
+        //otherwise, we update the config
+
+        switch(line) {
+            case 0: { //Country Code
+                if (vector.index == 0) { //Nothing was written
+                    break;
+                }
+                strncpy(config.country_code, vector.data, 2); 
+                break;
+            }
+
+            case 1: { //Certificate Path
+                if (vector.index == 0) { //Nothing was written
+                    config.cert_path = NULL;
+                    break;
+                }
+                config.cert_path = (char*) calloc(vector.index + 1, sizeof(char));
+                if (config.cert_path) strncpy(config.cert_path, vector.data, vector.index);
+                break;
+            }
+
+            case 2: { //MYG Path
+                if (vector.index == 0) { //Nothing was written
+                    config.cert_path = NULL;
+                    break;
+                }
+                config.myg_path = (char*) calloc(vector.index + 1, sizeof(char));
+                if (config.myg_path) strncpy(config.myg_path, vector.data, vector.index);
+                break;
+            }
+            case 3: { //POXY Path
+                if (vector.index == 0) { //Nothing was written
+                    config.proxy_path = NULL;
+                    break;
+                }
+                config.proxy_path = (char*) calloc(vector.index + 1, sizeof(char));
+                if (config.proxy_path) strncpy(config.proxy_path, vector.data, vector.index);
+                break;
+            }
+        }
+
+        //Reset the dataVector
+        memset(vector.data, 0, vector.index);
+        vector.index = 0;
         line++;
+
+        //Are we done?
+        if (c == EOF) break;
+
     }
     fclose(file);
+    if (vector.data) free(vector.data);
     return config;
 }
 
@@ -511,14 +580,153 @@ bool saveConfig(Config config, const char* path) {
     if (!file) return false;
 
     //build up a buffer and write it
-    fprintf(file, "%s", config.country_code);
+    fprintf(file, "%s\n%s\n%s\n%s", 
+        config.country_code,
+        config.cert_path  ? config.cert_path  : "",
+        config.myg_path   ? config.myg_path   : "",
+        config.proxy_path ? config.proxy_path : ""
+    );
     fclose(file);
 
     return true;
 }
 
+/*
+Displays contents of config for debugging
+@arg config -> Config to display.
+*/
+void debugConfig(Config config) {
+    fprintf(stderr,
+    "CONFIG DETAILS:\n"
+    "COUNTRY CODE: %s\n"
+    "LOCALHOST: %s\n"
+    "CERT PATH: %s\n"
+    "MYG PATH: %s\n"
+    "PROXY PATH: %s\n",
+    config.country_code, config.localhost ? "true" : "false", config.cert_path, config.myg_path, config.proxy_path);
+}
+
+/*
+Writes Config to visual text.
+@arg config -> current Config data.
+@arg buffer -> target to write to.
+@return status of write.
+*/
+bool updateConfigText(Config config, dataVector* buffer) {
+    if (!(buffer->data)) return false;
+    
+    dataVectorPushString(buffer, "CURRENT CONFIG\n\n");
+
+    dataVectorPushString(buffer, "COUNTRY CODE: ");
+    dataVectorPushString(buffer, config.country_code ? config.country_code : "NULL");
+    dataVectorPushString(buffer, "\n\n");
+
+    dataVectorPushString(buffer, "LOCALHOST: ");
+    dataVectorPushString(buffer, config.localhost ? "TRUE":"FALSE");
+    dataVectorPushString(buffer, "\n\n");
+
+
+    const int path_char_max = 30;
+
+    dataVectorPushString(buffer, "CERTIFICATE PATH:\n\n");
+    if (config.cert_path == NULL) dataVectorPushString(buffer, "NULL");
+    else {
+        int j = 0;
+        for (int i = 0; i < strlen(config.cert_path);) {
+            dataVectorPush(buffer, config.cert_path[i++]);
+            
+            j = i % path_char_max;
+            if (j == 0) {
+                dataVectorPush(buffer, '\n');
+            }
+        }
+    }
+    dataVectorPushString(buffer, "\n\n");
+
+    dataVectorPushString(buffer, "MYSTERY GIFT PATH:\n\n");
+    if (config.myg_path == NULL) dataVectorPushString(buffer, "NULL");
+    else {
+        int j = 0;
+        for (int i = 0; i < strlen(config.myg_path);) {
+            dataVectorPush(buffer, config.myg_path[i++]);
+            
+            j = i % path_char_max;
+            if (j == 0) {
+                dataVectorPush(buffer, '\n');
+            }
+        }
+    }
+    dataVectorPushString(buffer, "\n\n");
+
+    dataVectorPushString(buffer, "PROXY OUTPUT PATH:\n\n");
+    if (config.proxy_path == NULL) dataVectorPushString(buffer, "NULL");
+    else {
+        int j = 0;
+        for (int i = 0; i < strlen(config.proxy_path);) {
+            dataVectorPush(buffer, config.proxy_path[i++]);
+            
+            j = i % path_char_max;
+            if (j == 0) {
+                dataVectorPush(buffer, '\n');
+            }
+        }
+    }
+
+    return true;
+}
+
+/*
+Opens up a file explorer to select a folder.
+@arg title -> name of file explorer window title.
+@return full path of chosen folder.
+*/
+char* explorerGetFolder(const char* title) {
+    //Start in current working directory
+    
+    char cwd[1024] = {0};
+    if (getcwd(cwd, sizeof(cwd)) == NULL) {
+        cwd[0] = 0; //Set "empty"
+    }
+
+    char* path = tinyfd_selectFolderDialog(title ? title : "Select folder", cwd);
+    if (!path) return NULL;
+
+
+    char* return_buffer = (char*) calloc(strlen(path) + 1, sizeof(char));
+    if (!return_buffer) return NULL;
+    strcpy(return_buffer, path);
+
+    return return_buffer;
+}
+
+/*
+Opens up a file explorer to select a file.
+@arg title -> name of file explorer window title.
+@return full path of chosen file.
+*/
+char* explorerGetFile(const char* title) {
+    //Start in current working directory
+    
+    char cwd[1024] = {0};
+    if (getcwd(cwd, sizeof(cwd)) == NULL) {
+        cwd[0] = 0; //Set "empty"
+    }
+
+    char* path = tinyfd_openFileDialog(title ? title : "Select file", cwd, 0, NULL, NULL, 0);
+    if (!path) return NULL;
+
+
+    char* return_buffer = (char*) calloc(strlen(path) + 1, sizeof(char));
+    if (!return_buffer) return NULL;
+    strcpy(return_buffer, path);
+
+    return return_buffer;
+}
 
 int main() {
+
+    cottageInit();
+
     //constants to use.
     const char* SSID = "IVnet";
     const char* config_path = "IVnet.conf";
@@ -528,6 +736,15 @@ int main() {
     char* text = NULL;
 
     Config config = generateConfig(config_path);
+
+    debugConfig(config);
+
+    //Check for localhost
+    #if defined(ENABLE_LOCALHOST)
+    config.localhost = true;
+    #else
+    config.localhost = false;
+    #endif
 
     //IPC set up
     pid_t back_p = 0; //backend fd
@@ -613,17 +830,35 @@ int main() {
 
     Scene* config_menu = newScene();
     
-    Sprite* config_logo = newSprite(IMAGE, "assets/img/config_logo.png", 125, 0, IMAGE_SIZE_NATIVE, WHITE);
+    //Sprite* config_logo = newSprite(IMAGE, "assets/img/config_logo.png", 15, 50, IMAGE_SIZE_NATIVE, WHITE);
+    Sprite* config_view_select = newSprite(IMAGE, "assets/img/config_view_select.png", 140, 50, IMAGE_SIZE_NATIVE, WHITE);
     Sprite* config_return = newSprite(IMAGE, "assets/img/return.png", 1, 1, 50, 50, WHITE);
-    Sprite* config_info = newSprite(TEXT, " ", 250, 200, TEXT_SIZE(20), BLACK); 
 
     //contains buttons for selecting which config to choose.
-    Sprite* config_country_select = newSprite(IMAGE, "assets/img/config_country_select.png", 75, 150, 150, 150, WHITE);
+    Sprite* config_country_select     = newSprite(IMAGE, "assets/img/config_country_select.png",       60, 175, 150, 75, WHITE);
+    Sprite* config_cert_path_select   = newSprite(IMAGE, "assets/img/config_cert_path_select.png",     60, 275, 150, 75, WHITE);
+    Sprite* config_myg_path_select    = newSprite(IMAGE, "assets/img/config_myg_path_select.png",      60, 375, 150, 75, WHITE);
+    Sprite* config_proxy_path_select  = newSprite(IMAGE, "assets/img/config_proxy_path_select.png",    280, 175, 150, 75, WHITE);
 
-    addScene(config_menu, config_logo);
+
+    //addScene(config_menu, config_logo);
+    addScene(config_menu, config_view_select);
     addScene(config_menu, config_return);
-    addScene(config_menu, config_info);
+
     addScene(config_menu, config_country_select);
+    addScene(config_menu, config_cert_path_select);
+    addScene(config_menu, config_myg_path_select);
+    addScene(config_menu, config_proxy_path_select);
+
+
+    Scene* config_view_menu = newScene();
+
+    Sprite* config_view_return = newSprite(IMAGE, "assets/img/return.png", 1, 1, 50, 50, WHITE);
+    Sprite* config_info = newSprite(TEXT, "", 50, 50, TEXT_SIZE(15), BLACK); 
+
+    addScene(config_view_menu, config_view_return);
+    addScene(config_view_menu, config_info);
+
 
     Scene* country_select_menu = newScene();
     
@@ -681,6 +916,7 @@ int main() {
     char* dns_list[] = {
         "178.62.43.212 - PokeClassicNetwork",
         "167.235.229.36 - PCN Backup",
+        "0.0.0.0 - Local Host"
     };
     uint32_t dns_count = sizeof(dns_list) / sizeof(dns_list[0]);
     uint32_t dns_index = 0;
@@ -757,9 +993,14 @@ int main() {
             else if (imageHovering(main_config) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                 textUpdate(main_error, " ");
                 //update the config info
-                char config_info_buffer[100] = {0};
-                sprintf(config_info_buffer, "CURRENT CONFIG:\n\nCOUNTRY CODE: %s", config.country_code);
-                textUpdate(config_info, config_info_buffer);
+                dataVector config_info_buffer = dataVectorInit(128);
+                updateConfigText(config, &config_info_buffer);
+                textUpdate(config_info, config_info_buffer.data);
+
+                fprintf(stderr, "CONFIG NEW TEXT: %s\n", config_info_buffer.data);
+
+                if (config_info_buffer.data) free(config_info_buffer.data);
+
                 cur_scene = config_menu;
             }
             else if (imageHovering(main_start) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {   
@@ -921,6 +1162,20 @@ int main() {
                     }
 
                     strncpy(chosen_dns, choice, dash_index);
+
+                    //Ensure that we can localhost.
+                    if (strcmp(chosen_dns, "0.0.0.0") == 0) {
+                        if (!config.localhost) {
+                            textUpdate(main_error, "Error: ENABLE_LOCALHOST comp flag not set.");
+                            cur_scene = main_menu;
+                            goto screen_display;
+                        }
+                        else if (!config.cert_path) {
+                            textUpdate(main_error, "Error: Certificate path not set.");
+                            cur_scene = main_menu;
+                            goto screen_display;
+                        }
+                    }
                     
                     //with a chosen NID and DNS, we can start the backend
 
@@ -943,16 +1198,34 @@ int main() {
                         char* backend_args[] = {
                             "pkexec", //run as root
                             "bin/ivnetback",
+                            
+                            dongle_f,
                             chosen_nic,
+                            
+                            DNS_f,
                             chosen_dns,
-                            config.country_code, //hardcoded for now
+                            
+                            country_code_f,
+                            config.country_code,
+                            
+                            SSID_f,
                             SSID,
+
+                            cert_path_f,
+                            config.cert_path,
+
+                            myg_path_f,
+                            config.myg_path,
+                            
+                            proxy_path_f,
+                            config.proxy_path,
+
                             NULL,
                         };
                         execvp("pkexec", backend_args);
                         perror("Could not start backend\n");
                         //send an error message via printf
-                        printf("0:Could not start backend\n");
+                        printf("IVnet:0:Could not start backend\n");
                         fflush(stdout);
                         exit(1);
                     }
@@ -1008,10 +1281,21 @@ int main() {
             int bytes_read = read(pipefd[0], buffer, sizeof(buffer));
             //the format is "status:message"
             if (bytes_read > 0) {
-                if ((strncmp(buffer, "IVnet:1", strlen("IVnet:1")) == 0)) {
+                if ((strncmp(buffer, "IVnet:DNS", strlen("IVnet:DNS")) == 0)) {
+                    //special communication case, we retrieve the DNS.
+                    char* temp_dns = buffer + strlen("IVnet:DNS:");
+                    temp_dns[strlen(temp_dns) - 1] = 0; //remove trailing \n
+                    fprintf(stderr, "Got DNS from backend:%s\n", temp_dns);
+                    memset(chosen_dns, 0, 75);
+                    sprintf(chosen_dns, temp_dns);
+                }
+                else if ((strncmp(buffer, "IVnet:1", strlen("IVnet:1")) == 0)) {
                     perror("Backend success!\n");
                     //updated connection info
                     char connection_info_string[512] = {0};
+
+
+
                     sprintf(connection_info_string, "You can now connect your DS!\nPrimary DNS:%s\nSSID:%s", chosen_dns, SSID);
                     textUpdate(connection_info, connection_info_string);
                     
@@ -1093,15 +1377,79 @@ int main() {
             textUpdate(country_select_code, letter_buffer);
 
             imageHoveringChange(config_return, "assets/img/return_pressed.png", "assets/img/return.png");
+
+            imageHoveringChange(config_view_select, "assets/img/config_view_select_pressed.png", "assets/img/config_view_select.png");
+
             imageHoveringChange(config_country_select, "assets/img/config_country_select_pressed.png", "assets/img/config_country_select.png");
-            if (imageHovering(config_return) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) cur_scene = main_menu;
-            if (imageHovering(config_country_select) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                memset(letter_buffer, 0, sizeof(letter_buffer));
-                letter_count = 0;
-                textUpdate(country_select_code, letter_buffer);
-                cur_scene = country_select_menu;
-            } 
+            imageHoveringChange(config_cert_path_select, "assets/img/config_cert_path_select_pressed.png", "assets/img/config_cert_path_select.png");
+            imageHoveringChange(config_myg_path_select, "assets/img/config_myg_path_select_pressed.png", "assets/img/config_myg_path_select.png");
+            imageHoveringChange(config_proxy_path_select, "assets/img/config_proxy_path_select_pressed.png", "assets/img/config_proxy_path_select.png");
+
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                if (imageHovering(config_return)) cur_scene = main_menu;
+                
+                if (imageHovering(config_view_select)) cur_scene = config_view_menu;
+
+                else if (imageHovering(config_country_select)) {
+                    memset(letter_buffer, 0, sizeof(letter_buffer));
+                    letter_count = 0;
+                    textUpdate(country_select_code, letter_buffer);
+                    cur_scene = country_select_menu;
+                } 
+
+                else if (imageHovering(config_cert_path_select)) {
+                    char* cert_path = explorerGetFolder("Select your Certificate Folder:");
+                    if (cert_path) {
+                        if (config.cert_path) free(config.cert_path);
+                        config.cert_path = cert_path;
+                        saveConfig(config, config_path);
+                    }
+                    
+                    dataVector config_info_buffer = dataVectorInit(128);
+                    updateConfigText(config, &config_info_buffer);
+                    textUpdate(config_info, config_info_buffer.data);
+
+                    if (config_info_buffer.data) free(config_info_buffer.data);
+                } 
+                
+                else if (imageHovering(config_myg_path_select)) {                
+                    char* myg_path = explorerGetFolder("Select your Mystery Gift Folder:");
+                    if (myg_path) {
+                        if (config.myg_path) free(config.myg_path);
+                        config.myg_path = myg_path;
+                        saveConfig(config, config_path);
+                    }
+                    
+                    dataVector config_info_buffer = dataVectorInit(128);
+                    updateConfigText(config, &config_info_buffer);
+                    textUpdate(config_info, config_info_buffer.data);
+
+                    if (config_info_buffer.data) free(config_info_buffer.data);
+                } 
+
+                else if (imageHovering(config_proxy_path_select)) {                
+                    char* proxy_path = explorerGetFile("Select your Proxy Output file:");
+                    if (proxy_path) {
+                        if (config.proxy_path) free(config.proxy_path);
+                        config.proxy_path = proxy_path;
+                        saveConfig(config, config_path);
+                    }
+                    
+                    dataVector config_info_buffer = dataVectorInit(128);
+                    updateConfigText(config, &config_info_buffer);
+                    textUpdate(config_info, config_info_buffer.data);
+
+                    if (config_info_buffer.data) free(config_info_buffer.data);
+                }
+            }
         }
+
+        else if (cur_scene == config_view_menu) {
+            imageHoveringChange(config_view_return, "assets/img/return_pressed.png", "assets/img/return.png");
+            
+            if (imageHovering(config_view_return) &&IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) cur_scene = config_menu;
+        }
+
         //config settings
         else if (cur_scene == country_select_menu) {
             //read keys, update the country code as reading, limit to two characters
@@ -1134,9 +1482,11 @@ int main() {
                     strcpy(config.country_code, letter_buffer);
                     saveConfig(config, config_path);
                     
-                    char config_info_buffer[100] = {0};
-                    sprintf(config_info_buffer, "CURRENT CONFIG:\n\nCOUNTRY CODE: %s", config.country_code);
-                    textUpdate(config_info, config_info_buffer);
+                    dataVector config_info_buffer = dataVectorInit(128);
+                    updateConfigText(config, &config_info_buffer);
+                    textUpdate(config_info, config_info_buffer.data);
+
+                    if (config_info_buffer.data) free(config_info_buffer.data);
                     
                     cur_scene = config_menu;
                 }
@@ -1164,6 +1514,9 @@ int main() {
     
     cur_scene = NULL;
     CloseWindow();
+
+    //Save our current config as well, just in case.
+    saveConfig(config, config_path);
 
     return 0;
 }

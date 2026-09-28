@@ -5,12 +5,18 @@ Linux program for connecting the generation IV Pokemon games to the internet.
 Visit https://github.com/vixthevix/IVnet for more info.
 */
 
+// #include <openssl/evp.h>
+// #include <openssl/prov_ssl.h>
+
+#include "base64/base64.h"
+#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
 
+#include <sys/poll.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -25,7 +31,43 @@ Visit https://github.com/vixthevix/IVnet for more info.
 #include <sys/prctl.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <poll.h>
 
+#include <netinet/tcp.h>
+
+//OpenSSL 3.0 libraries and cottage
+//#define ENABLE_LOCALHOST //TESTING DEFINITION
+#if defined(ENABLE_LOCALHOST)
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+
+// //for legacy ciphers
+// #include <openssl/provider.h> 
+// extern OSSL_provider_init_fn ossl_legacy_provider_init;
+
+#define COTTAGE_START
+#include "cottage/cottage.h"
+#endif
+
+//TESTING DEFINITION
+//#define ENABLE_PROXY_DEBUG
+#if defined (ENABLE_PROXY_DEBUG)
+const char* PCN_IP = "178.62.43.212";
+const char* PCN_HTTPS_PORT = "443";
+const char* PCN_RAWTCP_PORT = "29900";
+#endif
+
+#include "ivnet_flags.h"
+
+char* dongle       = NULL;
+char* DNS          = NULL;
+char* country_code = NULL;
+char* SSID         = NULL;
+
+char* cert_path    = NULL;
+char* myg_path     = NULL;
+
+char* proxy_path   = NULL;
 
 //Signal data for proper process-end cleanup
 volatile sig_atomic_t running = 1;
@@ -89,6 +131,1297 @@ void freeIpCandidates(IpCandidate* head) {
     free(head);
 }
 
+#if defined(ENABLE_LOCALHOST)
+/*
+Creates the certificate chain file needed for initialising a local server.
+@arg cert_path -> path to certificate.
+@arg key_path -> path to key.
+@return status of create.
+*/
+bool createLocalChain(const char* cert_path, const char* key_path) {
+    //Files needed for chain creation
+    const char* server_key   = "/tmp/ivnet/server.key";
+    const char* server_csr   = "/tmp/ivnet/server.csr";
+    const char* server_crt   = "/tmp/ivnet/server.crt";
+    const char* server_chain = "/tmp/ivnet/server.chain.crt";
+
+    const char* csr_info = "\"/CN=nas.nintendowifi.net/O=Nintendo/C=JP\"";
+    
+    const unsigned int rsa_key_size = 1024; //in bits
+
+    //Command buffer
+    char cmd[1024] = {0};
+
+    //Local server private key
+    sprintf(cmd, "openssl genrsa -out %s %u 1>/dev/null", server_key, rsa_key_size);
+    system(cmd);
+
+    //Certificate Signing Request (contains data for the DS to verify)
+    sprintf(cmd,
+        "openssl req -new -sha1 -key %s -out %s -subj %s 1>/dev/null",
+        server_key, server_csr, csr_info
+    );
+    system(cmd);
+
+    //Server certificate, signed with function arguments.
+    sprintf(cmd,
+        "openssl x509 -req -sha1 -in %s -CA %s -CAkey %s -CAcreateserial -out %s -days 3650 1>/dev/null",
+        server_csr, cert_path, key_path, server_crt
+    );
+    system(cmd); 
+
+    //Create certificate chain file
+    sprintf(cmd, "cat %s %s > %s", server_crt, cert_path, server_chain);
+    system(cmd);
+
+    // //LET ME SEE THE CERTIFICATE FOR A BIT
+    // sprintf(cmd, "cp %s /home/vixthevix/Documents/code/personal/IVnet", server_chain);
+    // system(cmd);
+
+    return true;
+}
+
+/*
+Removes the temporary files used for chain creation.
+*/
+void cleanLocalChain(void) {
+    const char* server_key = "/tmp/ivnet/server.key";
+    const char* server_csr = "/tmp/ivnet/server.csr";
+    const char* server_crt = "/tmp/ivnet/server.crt";
+    const char* server_chain = "/tmp/ivnet/server.chain.crt";
+
+    //Command buffer
+    char cmd[1024] = {0};
+
+    sprintf(cmd, "rm %s %s %s %s", server_key, server_csr, server_crt, server_chain);
+    system(cmd);
+}
+
+/*
+Encodes string into Nitro Base64 strings.
+@arg plain -> string to encode.
+@return encoded string.
+*/
+char* nitroBase64Encode(char* plain) {
+    if (!plain) return NULL;
+    char* cipher = base64_encode(plain);
+    if (!cipher) return NULL;
+
+    //replace '=' with '*'
+    for (size_t i = 0; i < strlen(cipher); i++) {
+        if (cipher[i] == '=') cipher[i] = '*'; 
+    }
+
+    return cipher;
+}
+
+/*
+Decodes Nitro Base64 strings.
+@arg cipher -> string to decode.
+@return decoded string.
+*/
+char* nitroBase64Decode(char* cipher) {
+    if (!cipher) return NULL;
+    
+    //replace '*' with '='
+    for (size_t i = 0; i < strlen(cipher); i++) {
+        if (cipher[i] == '*') cipher[i] = '='; 
+    }
+    
+    char* plain = base64_decode(cipher);
+    if (!plain) return NULL;
+
+    return plain;
+}
+
+/*
+Takes in contents of Nitro encoded data and
+makes mapping of keys to plain text.
+@arg data -> Nitro encoded data.
+@return mapping of keys to plain text.
+*/
+stringMap* strMapNitroDecode(char* data) {
+    if (!data) return NULL;
+
+    stringMap* map = strMapInit();
+    if (!map) return NULL;
+
+    const int keyvalMax = 256;
+    char key[256] = {0};
+    char value[256] = {0};
+    bool is_key = true;
+    int keyval_index = 0;
+    for (size_t i = 0; i < strlen(data); i++) {
+
+        //Value can be URL decoded sometimes.
+        //Due to nature of Nitro Base64 encoding, we cannot use cottage's urlDecode.
+        //Instead, check for edge cases.
+        if (data[i] == '%' && data[i + 1] && data[i + 2]) { 
+            char check = 0;
+
+            if (data[i+1] == '2' && (data[i+2] == 'A' || data[i+2] == 'a')) {
+                // * symbol
+                check = '*';
+            }
+            else if (data[i+1] == '2' && (data[i+2] == 'B' || data[i+2] == 'b')) {
+                // + symbol
+                check = '+';
+            }
+            else if (data[i+1] == '2' && (data[i+2] == 'F' || data[i+2] == 'f')) {
+                // / symbol
+                check = '/';
+            }
+
+            if (check) {
+                if (keyval_index < keyvalMax - 1) { //Bounds check
+                    if (is_key) key[keyval_index++] = check;
+                    else value[keyval_index++] = check;
+                }
+                i += 2; //Skip "%__"
+                continue;
+            }
+        }
+        
+        if (data[i] == '=') {
+            //Switching to value
+            is_key = false;
+            keyval_index = 0;
+            continue;
+        }
+        else if (data[i] == '&') {
+            is_key = true;
+            keyval_index = 0;
+
+            //We have our key and value.
+            //Decode, then store
+            char* plain = nitroBase64Decode(value);
+            if (plain) {
+                fprintf(stderr, "%s: %s\n", key, plain);
+                strMapInsert(&map, key, plain);
+                free(plain);
+            }
+
+            memset(key, 0, keyvalMax);
+            memset(value, 0, keyvalMax);
+            continue;
+        }
+        if (is_key) key[keyval_index++] = data[i];
+        else value[keyval_index++] = data[i];
+    }
+    //if key and value left over, put them in.
+    if (!is_key && key[0] && value[0]) {
+        char* plain = nitroBase64Decode(value);
+        if (plain) {
+            fprintf(stderr, "%s: %s\n", key, plain);
+            strMapInsert(&map, key, plain);
+            free(plain);
+        }
+    }
+
+    return map;
+}
+
+/*
+Takes in contents of a stringMap and converts 
+into a Nitro encoded NWC standard payload.
+@arg map -> mapping of keys to plaintext.
+@return encoded string.
+*/
+char* strMapNitroEncode(stringMap* map) {
+    if (!map) return NULL;
+
+    dataVector vector = dataVectorInit(32);
+    if (!vector.data) return NULL;
+
+    size_t curCount = 0;
+    for (size_t i = 0; i < map->capacity; i++) {
+        if (map->items[i]) {
+            char* key = map->items[i]->key;
+            char* value_plain = map->items[i]->value;
+            if (!key || !value_plain) continue;
+            curCount++;
+            
+            char* value_cipher = nitroBase64Encode(value_plain);
+            if (!value_cipher) continue;
+
+            dataVectorPushString(&vector, key);
+            dataVectorPush(&vector, '=');
+            dataVectorPushString(&vector, value_cipher);
+            if (curCount < map->count) dataVectorPushString(&vector, "&");
+            else                       dataVectorPushString(&vector, "\r\n");
+
+            free(value_cipher);
+        }
+    }
+
+    return vector.data;
+}
+
+/*
+Generates a random string of a given length.
+@arg buffer -> stores random string.
+@arg len -> length of buffer.
+*/
+void generateRandomString(char *buffer, size_t len) {
+    char charset[] = "0123456789"
+                     "abcdefghijklmnopqrstuvwxyz"
+                     "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+    while (len-- > 0) {
+        size_t index = (double) rand() / RAND_MAX * (sizeof charset - 1);
+        *buffer++ = charset[index];
+    }
+    *buffer = '\0';
+}
+
+/*
+Manages an IVnet HTTP local server.
+@arg server -> HTTP ServerConfig to manage.
+@arg timeout -> polling timeout limit.
+*/
+void HTTP_manage(ServerConfig* server, int timeout) {
+    int ready_count = CotPollPoll(server->poll, timeout);
+    for (int i = 0; i < ready_count; i++) {
+        int cur_fd = CotPollAccess(server->poll, i);
+        if (cur_fd == server->server_fd) {
+            //new client
+            int client_fd = serverAcceptClient(server);
+            if (client_fd < 0) continue;
+            CotPollPush(server->poll, client_fd); 
+        }
+        else {
+            //existing client
+            int bytes = 0;
+            char* client_offload = serverRecvClient(cur_fd, &bytes);
+            HttpRequest request;
+            if (splitHttpRequest(&request, client_offload).status == COT_ERROR) {
+                fprintf(stderr, "Could not split HTTP request\n");
+                //goto cleanup;
+            }
+            fprintf(stderr, "DS REQUEST:\n%s\n", client_offload);
+
+            if (HttpRequestValid(request) && request.type == GET) {
+                //Assuming its the connection test, send a default response.
+                fprintf(stderr, "GET HTTP request valid.\n\n");
+                HttpResponse response;
+                HttpResponseInit(&response, request.version, HttpStatus_OK);
+                
+                HttpResponseAddOption(&response, "Content-type", "text/html");
+                HttpResponseAddOption(&response, "X-Organization", "Nintendo");
+                HttpResponseAddOption(&response, "Server", "BigIp");
+                HttpResponseAddOption(&response, "Content-length", "2");
+                
+                HttpResponseAddPayload(&response, "ok", strlen("ok"));
+
+                char* response_string = buildHttpResponse(response);
+                size_t response_size = HttpResponseTotalSize(response);
+                send(cur_fd, response_string, response_size, 0);
+
+                HttpResponseFree(response);
+            }
+
+            HttpRequestFree(request);
+            if (client_offload) free(client_offload);
+            CotPollPop(server->poll, cur_fd);
+            serverCloseClient(cur_fd);
+        }
+    }
+}
+
+/*
+Sub-function for handling DS authentication requests.
+@arg response -> input HttpResponse to build.
+@arg request -> HttpRequest to analyse.
+@arg payload_vars -> Nitro decoded stringMap of DS payload.
+@return response built succesfully.
+*/
+bool HTTPS_manage_auth(HttpResponse* response, HttpRequest request, stringMap* payload_vars) {
+    if (
+        (strMapGet(request.options, "Host")) && strcmp(strMapGet(request.options, "Host"), "nas.nintendowifi.net") == 0 &&
+        request.type == POST &&
+        strcmp(request.target, "/ac") == 0 &&
+        (strMapGet(payload_vars, "action")) && strcmp(strMapGet(payload_vars, "action"), "login") == 0
+    ) {
+        fprintf(stderr, "AUTHENTICATION: start\n\n");
+        stringMap* response_vars = strMapInit();
+        if (!response_vars) return false;
+
+        strMapInsert(&response_vars, "retry", "0");
+        //001 -> success
+        strMapInsert(&response_vars, "returncd", "001");
+        strMapInsert(&response_vars, "locator", "gamespy.com");
+        //Challenge must be 8 characters long
+        strMapInsert(&response_vars, "challenge", "12345678");
+        strMapInsert(&response_vars, "datetime", "20260910143832");
+        //Token must be "NDS" + some number of characters.
+        //Not sure if these characters matter too much. so make it whatever you want.
+        strMapInsert(&response_vars, "token", "NDS/IVnet");
+
+        char* response_payload = strMapNitroEncode(response_vars);
+        if (!response_payload) {
+            strMapFree(response_vars);
+            return false;
+        }
+
+        fprintf(stderr, "AUTHENTICATION: response_payload\n\n");
+
+        char response_payload_size[100] = {0};
+        sprintf(response_payload_size, "%zu", strlen(response_payload));
+
+        //Options
+        HttpResponseAddOption(response, "Content-Type", "text/plain;charset=UTF-8");
+        HttpResponseAddOption(response, "Connection", "close");
+        HttpResponseAddOption(response, "Content-Length", response_payload_size);
+        HttpResponseAddOption(response, "NODE", "wifiappw3");
+        HttpResponseAddOption(response, "Server", "IVnet");
+        HttpResponseAddOption(response, "Date", "Christmas");
+        HttpResponseAddOption(response, "Vary", "Accept-Encoding");
+        HttpResponseAddOption(response, "Duration", "D=0 usec");
+
+        //Payload
+        HttpResponseAddPayload(response, response_payload, strlen(response_payload));
+
+        free(response_payload);
+        strMapFree(response_vars);
+        
+        return true;
+    }
+    
+    return false;
+}
+
+/*
+Sub-function for handling DS Mystery Gift requests.
+@arg response -> input HttpResponse to build.
+@arg request -> HttpRequest to analyse.
+@arg payload_vars -> Nitro decoded stringMap of DS payload.
+@return response built succesfully.
+*/
+bool HTTPS_manage_myg(HttpResponse* response, HttpRequest request, stringMap* payload_vars) {
+    //constants for mystery gift
+    const char* svchost = "local.ivnet.net";
+    const char* gift_location = myg_path;
+    
+    if (!gift_location) return false;
+
+    //all mystery gift files on the server
+    char** test_gifts = (char**) calloc(50, sizeof(char*));
+    int test_gifts_index = 0;
+    DIR* directory = opendir(gift_location);
+    int dir_fd = dirfd(directory);
+    struct dirent* dentry;
+    while ((dentry = readdir(directory))) {
+        fprintf(stderr, "FOUND %s\n", dentry->d_name);
+        //Get file info
+        struct stat dentry_stats;
+        int dentry_status = fstatat(dir_fd, dentry->d_name, &dentry_stats, 0);
+
+        //Check file info
+        if (
+            (dentry_stats.st_mode & S_IFREG) && //Normal file
+            (strstr(dentry->d_name, ".myg") != NULL) && //MYG file ending
+            (dentry_stats.st_size == 936) //MYG file size
+        ) {
+            test_gifts[test_gifts_index] = calloc(strlen(dentry->d_name) + 1, sizeof(char));
+            strcpy(test_gifts[test_gifts_index], dentry->d_name);
+            test_gifts_index++;
+            fprintf(stderr, "FOUND MYG %s\n", dentry->d_name);
+        }
+    }
+
+    closedir(directory);
+    bool gifts_exist = (test_gifts_index != 0);
+
+    bool return_status = false;
+
+    //Mystery gift start request
+    if (
+        (strMapGet(request.options, "Host")) && strcmp(strMapGet(request.options, "Host"), "nas.nintendowifi.net") == 0 &&
+        request.type == POST &&
+        request.target && strcmp(request.target, "/ac") == 0 &&
+        (strMapGet(payload_vars, "action")) && strcmp(strMapGet(payload_vars, "action"), "SVCLOC") == 0
+    ) {
+        /*
+        Response options look pretty much the same as login.
+        Payload options has two tokens, a returncd of 007, and statusdata of Y.
+        Also has a svchost, which can be whatever we want as far as im concerned.
+        */
+        stringMap* response_vars = strMapInit();
+        if (!response_vars) goto cleanup;
+
+        strMapInsert(&response_vars, "retry", "0");
+        //007 -> Server found (AKA mystery gifts exist.)
+        //Maybe check first if there are local gifts available first,
+        //to return either 000 or 007
+        strMapInsert(&response_vars, "returncd", gifts_exist ? "007" : "000");
+        strMapInsert(&response_vars, "datetime", "20260910143832");
+        //Token must be "NDS" + some number of characters.
+        //Not sure if these characters matter too much. so make it whatever you want.
+        //Servicetoken copies token.
+        strMapInsert(&response_vars, "token", "NDS/IVnet");
+        strMapInsert(&response_vars, "servicetoken", "NDS/IVnet");
+        //Status of server (active or not)
+        strMapInsert(&response_vars, "statusdata", "Y");
+        //Mystery gift host (VERY IMPORTANT)
+        strMapInsert(&response_vars, "svchost", svchost);
+
+        char* response_payload = strMapNitroEncode(response_vars);
+        if (!response_payload) {
+            strMapFree(response_vars);
+            goto cleanup;
+        }
+
+        char response_payload_size[100] = {0};
+        sprintf(response_payload_size, "%zu", strlen(response_payload));
+
+
+        HttpResponseAddOption(response, "Content-Type", "text/plain;charset=UTF-8");
+        HttpResponseAddOption(response, "Connection", "close");
+        HttpResponseAddOption(response, "Content-Length", response_payload_size);
+        HttpResponseAddOption(response, "NODE", "wifiappw3");
+        HttpResponseAddOption(response, "Server", "IVnet");
+        HttpResponseAddOption(response, "Date", "Christmas");
+        HttpResponseAddOption(response, "Vary", "Accept-Encoding");
+        HttpResponseAddOption(response, "Duration", "D=0 usec");
+        
+        HttpResponseAddPayload(response, response_payload, strlen(response_payload));
+
+        free(response_payload);
+        strMapFree(response_vars);
+        
+        return_status = true;
+    }
+    //Mystery gift "count" request
+    else if (
+        request.type == POST &&
+        (request.target) && strcmp(request.target, "/download") == 0 &&
+        (strMapGet(request.options, "Host")) && strcmp(strMapGet(request.options, "Host"), svchost) == 0 &&
+        (strMapGet(payload_vars, "action")) && strcmp(strMapGet(payload_vars, "action"), "count") == 0
+    ) {
+        //Very simple response, its the number of mystery gifts to be sent.
+        //Almost always respond with 1. Maybe experiment with this?
+        const unsigned gift_count = 1;
+        char gift_count_str[10] = {0};
+        sprintf(gift_count_str, "%u", gift_count);
+
+        const unsigned gift_count_len = strlen(gift_count_str);
+        char gift_count_len_str[10] = {0};
+        sprintf(gift_count_len_str, "%u", gift_count_len);
+
+        HttpResponseAddOption(response, "Content-Type", "text/plain");
+        HttpResponseAddOption(response, "Connection", "close");
+        HttpResponseAddOption(response, "Content-Length", gift_count_len_str);
+        HttpResponseAddOption(response, "Server", "IVnet");
+        HttpResponseAddOption(response, "Date", "Christmas");
+
+        HttpResponseAddPayload(response, gift_count_str, gift_count_len);
+        //fprintf(stderr, "\nRESPONSE PAYLOAD:\n%s\n\n", response.payload);
+        return_status = true;
+    }
+    //Mystery gift "list" request
+    else if (
+        request.type == POST &&
+        (request.target) && strcmp(request.target, "/download") == 0 &&
+        (strMapGet(request.options, "Host")) && strcmp(strMapGet(request.options, "Host"), svchost) == 0 &&
+        (strMapGet(payload_vars, "action")) && strcmp(strMapGet(payload_vars, "action"), "list") == 0
+    ) {
+        //We show all our mystery gifts
+        //Look through MysteryGift .myg folder, to find "count" random gifts.
+        /*
+        It appears the "num" parameter may be some sort of max buffer.
+        "offset" indicates how many gifts it has received so far.
+        this means we must keep track of "offset" and our previous "count"
+        and send a maximum of 10 gifts at a time.
+        For now, we just hardcode 1.
+        
+        202dppUNalarmclock.myg					936
+        each line of the gift ends with \r\n.
+        5 tab spaces between gift name and gift size.
+        */
+
+        int r = rand() % test_gifts_index;
+        
+        dataVector list_response = dataVectorInit(64);
+        if (!list_response.data) goto cleanup;
+
+        dataVectorPushString(&list_response, test_gifts[r]);
+        dataVectorPushString(&list_response, "\t\t\t\t\t936\r\n");
+
+        char list_response_size[10] = {0};
+        snprintf(list_response_size, 10, "%lu", strlen(list_response.data));
+        
+        HttpResponseAddOption(response, "Content-Type", "text/plain");
+        HttpResponseAddOption(response, "Connection", "close");
+        HttpResponseAddOption(response, "Content-Length", list_response_size);
+        HttpResponseAddOption(response, "Server", "IVnet");
+        HttpResponseAddOption(response, "Date", "Christmas");
+
+        HttpResponseAddPayload(response, list_response.data, strlen(list_response.data));
+        if (list_response.data) free(list_response.data);
+        
+        return_status = true;
+    }
+    //Mystery gift "contents" request
+    else if (
+        request.type == POST &&
+        (request.target) && strcmp(request.target, "/download") == 0 &&
+        (strMapGet(request.options, "Host")) && strcmp(strMapGet(request.options, "Host"), svchost) == 0 &&
+        (strMapGet(payload_vars, "action")) && strcmp(strMapGet(payload_vars, "action"), "contents") == 0
+    ) {
+        //Finally, we send our .myg file.
+        //It is specified in the contents option of the payload_vars
+
+        char* gift = strMapGet(payload_vars, "contents");
+
+
+        //char fullFile[2048] = {0};
+        //snprintf(fullFile, 2048, "%s/%s", gift_location, gift);
+
+        dataVector fullFile = dataVectorInit(256);
+        if (!fullFile.data) goto cleanup;
+        
+        dataVectorPushString(&fullFile, gift_location);
+        dataVectorPushString(&fullFile, "/");
+        dataVectorPushString(&fullFile, gift);
+
+        FILE* gift_file = fopen(fullFile.data, "rb");
+        if (!gift_file) {
+            if (fullFile.data) free(fullFile.data);
+            goto cleanup;
+        }
+
+        const int size = 936;
+        char buffer[1200] = {0};
+        fread(buffer, 1, size, gift_file);
+        fclose(gift_file);
+
+        //We ned a little something for content disposition option.
+        char content_disposition[100] = {0};
+        sprintf(content_disposition, "attachment; filename = \"%s\"", gift);
+        
+        HttpResponseAddOption(response, "Content-Type", "application/x-dsdl");
+        HttpResponseAddOption(response, "Connection", "close");
+        HttpResponseAddOption(response, "Content-Length", "936");
+        HttpResponseAddOption(response, "Server", "IVnet");
+        HttpResponseAddOption(response, "Date", "Christmas");
+        HttpResponseAddOption(response, "Content-Disposition", content_disposition);
+        
+        HttpResponseAddPayload(response, buffer, size);
+        fprintf(stderr, "%s has been sent off!\n\n", gift);
+        if (fullFile.data) free(fullFile.data);
+        
+        return_status = true;
+    }
+
+    cleanup:
+    if (test_gifts) {
+        for (int i = 0; i < test_gifts_index; i++) {
+            if (test_gifts[i]) free(test_gifts[i]);
+        }
+        free(test_gifts);
+    }
+
+    return return_status;
+}
+
+const char* HTTPS_default_response = 
+"HTTP/1.0 404 Not Found\n"
+"Content-Type: text/plaintext\r\n"
+"Connection: close\r\n"
+"Server: IVnet\r\n"
+"Content-Length: 0\r\n"
+"\r\n";
+
+/*
+Manages an IVnet HTTPS local server.
+@arg server -> HTTPS ServerConfig to manage.
+@arg timeout -> polling timeout limit.
+@arg ctx -> OpenSSL Context for verifying packets.
+*/
+void HTTPS_manage(ServerConfig* server, int timeout, SSL_CTX* ctx) {
+    int ready_count = CotPollPoll(server->poll, timeout);
+    for (int index = 0; index < ready_count; index++) {
+        int cur_fd = CotPollAccess(server->poll, index);
+        if (cur_fd == server->server_fd) {
+            //new client
+            int client_fd = serverAcceptClient(server);
+            if (client_fd < 0) continue;
+            CotPollPush(server->poll, client_fd); 
+        }
+        else {
+            //existing client
+
+            //Ensure we send whole packets, instead of Linux default waiting
+            int nodelay_flag = 1;
+            setsockopt(cur_fd, IPPROTO_TCP, TCP_NODELAY, (char*)&nodelay_flag, sizeof(int));
+
+            //Allow SSL to decrypt the message.
+            SSL* ssl = SSL_new(ctx);
+            SSL_set_fd(ssl, cur_fd); //attach our current client to SSL.
+
+            //Perform the TLS handshake
+            //Due to CotPoll being non blocking, we need to account for this
+            //using wait loops
+            const int ssl_accept_timeout = 1000; //milliseconds
+            int ssl_accept = 0;
+            while ((ssl_accept = SSL_accept(ssl)) <= 0) {
+                int ssl_err = SSL_get_error(ssl, ssl_accept);
+
+                if (ssl_err == SSL_ERROR_WANT_READ) {
+                    //Waiting to read from client, so pause
+                    struct pollfd ssl_pfd = {.fd = cur_fd, .events=POLLIN};
+                    if (poll(&ssl_pfd, 1, ssl_accept_timeout) <= 0) {
+                        fprintf(stderr, "HANDSHAKE READ TIMEOUT\n");
+                        break;
+                    }
+                    
+                }
+                else if (ssl_err == SSL_ERROR_WANT_WRITE) {
+                    //Waiting to write to client, so pause
+                    struct pollfd ssl_pfd = {.fd = cur_fd, .events=POLLOUT};
+                    if (poll(&ssl_pfd, 1, ssl_accept_timeout) <= 0) {
+                        fprintf(stderr, "HANDSHAKE WRITE TIMEOUT\n");
+                        break;
+                    }
+                }
+                else {
+                    //Actual error
+                    ERR_print_errors_fp(stderr);
+                    fprintf(stderr, "HANDSHAKE FAILED, CODE: %i\n", ssl_err);
+                    break;
+                }
+            }
+            if (ssl_accept == 1) { //success
+                //We can now decrypt our NDS messages
+                //Also use wait polling here
+                char client_offload[2048] = {0}; 
+                int bytes = 0;
+                //while we think we are reading...
+                while ((bytes = SSL_read(ssl, client_offload, sizeof(client_offload) - 1)) <= 0) {
+                    int ssl_err = SSL_get_error(ssl, bytes);
+
+                    if (ssl_err == SSL_ERROR_WANT_READ) {
+                        //Waiting to read from client, so pause
+                        struct pollfd ssl_pfd = {.fd = cur_fd, .events=POLLIN};
+                        poll(&ssl_pfd, 1, ssl_accept_timeout); 
+                    }
+                    else {
+                        //error
+                        break;
+                    }
+                }
+
+                // if (bytes > 0) fprintf(stderr, "DECRYPTED DS REQUEST:\n%s\n", client_offload);
+                // else fprintf(stderr, "NO ENCRYPTED DS MESSAGE FOUND\n");
+
+                bool default_error = false;
+                stringMap* payload_vars = NULL;
+                HttpRequest request = {0};
+                HttpResponse response = {0};
+                char* response_string = NULL;
+
+                //now with our client offload, we can wrap it in a HttpRequest
+                memset(&request, 0, sizeof(HttpRequest));
+                if (splitHttpRequest(&request, client_offload).status == COT_ERROR) {
+                    fprintf(stderr, "Could not wrap HTTP request.");
+
+                    if (response_string) free(response_string);
+                    response_string = (char*)HTTPS_default_response;
+                    default_error = true;
+                    
+                    goto cleanup;
+                }
+                
+                //To uniquely identify HTTPS requests from the DS, we need to
+                //get string maps of the Nitro encoded and decoded payload.
+
+                payload_vars = strMapNitroDecode(request.payload);
+                if (!payload_vars) {
+                    if (response_string) free(response_string);
+                    response_string = (char*)HTTPS_default_response;
+                    default_error = true;
+                    
+                    goto cleanup;
+                } 
+                
+                fprintf(stderr, "PAYLOAD FULLY DECRYPTED\n\n");
+                
+                //Now, we can check the specific HTTPS request.
+                if (HttpResponseInit(&response, 1.0, HttpStatus_OK).status == COT_ERROR) {
+                    fprintf(stderr, "FAILED TO BUILD NAS RESPONSE.\n");
+                    
+                    //build a string here.
+                    if (response_string) free(response_string);
+                    response_string = (char*)HTTPS_default_response;
+                    default_error = true;
+
+                    goto cleanup;
+                }
+
+                srand(time(NULL));
+
+                if      (HTTPS_manage_auth(&response, request, payload_vars));
+                else if (HTTPS_manage_myg (&response, request, payload_vars));
+                else {
+                    //No case for this specific HTTPS request.
+                    fprintf(stderr, "NO HTTPS REQUEST CASE FOUND.\n\n");
+                    
+                    if (response_string) free(response_string);
+                    response_string = (char*)HTTPS_default_response;
+                    default_error = true;
+
+                    goto cleanup;
+                }
+
+                //Response set up
+                response_string = buildHttpResponse(response);
+                if (!response_string) {
+                    fprintf(stderr, "FAILED TO BUILD NAS RESPONSE STRING.\n");
+                    
+                    if (response_string) free(response_string);
+                    response_string = (char*)HTTPS_default_response;
+                    default_error = true;
+                    
+                    goto cleanup;
+                }
+                fprintf(stderr, "\nRESPONSE TO SEND:\n%s\n\n", response_string);
+
+                cleanup:
+                //With our response string finished, we need to carefully write to the DS.
+                int total_bytes = default_error ? strlen(response_string) : HttpResponseTotalSize(response);
+                int cur_bytes = 0;
+                while (cur_bytes < total_bytes) {
+                    int written = SSL_write(ssl, response_string + cur_bytes, total_bytes - cur_bytes);
+                    if (written <= 0) {
+                        int err = SSL_get_error(ssl, written);
+                        if (err == SSL_ERROR_WANT_WRITE || err == SSL_ERROR_WANT_READ) {
+                            //Buffer full, continue writing.
+                            usleep(1000);
+                            continue;
+                        }
+                        else break; //Error
+                    }
+                    cur_bytes += written;
+                }
+                fprintf(stderr, "HTTPS DELIVERED %d / %d BYTES\n\n", cur_bytes, total_bytes);
+                
+                strMapFree(payload_vars);
+                HttpRequestFree(request);
+                HttpResponseFree(response);
+                if (response_string && !default_error) free(response_string);
+            }
+
+            //Shutdown gracefully.
+            int shutdown_ret = SSL_shutdown(ssl);
+            if (shutdown_ret == 0) {
+                //Wait for the DS to confirm end of connection.
+                int ret = 0;
+                int timeout_count = 0;
+                while ((ret = SSL_shutdown(ssl)) < 0 && timeout_count < 50) {
+                    int err = SSL_get_error(ssl, ret);
+                    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+                        //DS is still processing.
+                        usleep(1000);
+                        timeout_count++;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            fprintf(stderr, "shut down\n\n");
+            SSL_free(ssl);
+            CotPollPop(server->poll, cur_fd);
+            serverCloseClient(cur_fd);
+        }
+    }
+}
+#endif
+
+#ifdef ENABLE_PROXY_DEBUG
+
+/*
+Debug function for capturing HTTP packets sent by the DS.
+@arg server -> HTTP ServerConfig to manage.
+@arg timeout -> polling timeout limit.
+@arg output -> stream to print to.
+*/
+void HTTP_proxy(ServerConfig* server, int timeout, FILE* output) {
+    if (!server) {
+        fprintf(stderr, "HTTP_proxy arguments invalid.\n");
+        if (output) fprintf(output, "HTTP_proxy arguments invalid.\n");
+        return;
+    } 
+    
+    int ready_count = CotPollPoll(server->poll, timeout);
+    for (int i = 0; i < ready_count; i++) {
+        int cur_fd = CotPollAccess(server->poll, i);
+        if (cur_fd == server->server_fd) {
+            //new client
+            int client_fd = serverAcceptClient(server);
+            if (client_fd < 0) continue;
+            CotPollPush(server->poll, client_fd); 
+        }
+        else {
+            //existing client
+            fprintf(stderr, "----------HTTP PROXY DEBUG START----------\n\n");
+            if (output) fprintf(output, "----------HTTP PROXY DEBUG START----------\n\n");
+            
+            int bytes = 0;
+            char* client_offload = serverRecvClient(cur_fd, &bytes);
+            if (client_offload) {
+                fprintf(stderr, "----------DS HTTP REQUEST START----------\n\n%s\n\n----------DS HTTP REQUEST END----------\n\n", client_offload);
+                if (output) fprintf(output, "----------DS HTTP REQUEST START----------\n\n%s\n\n----------DS HTTP REQUEST END----------\n\n", client_offload);
+            }
+            else {
+                fprintf(stderr, "NO DS MESSAGE FOUND\n\n");
+                if (output) fprintf(output, "NO DS MESSAGE FOUND\n\n");
+            }
+            fprintf(stderr, "----------HTTP PROXY DEBUG END----------\n\n");
+            if (output) fprintf(output, "----------HTTP PROXY DEBUG END----------\n\n");
+            
+
+            //Default HTTP response code.
+            HttpRequest request;
+            if (splitHttpRequest(&request, client_offload).status == COT_ERROR) {
+                fprintf(stderr, "Could not split HTTP request\n");
+            }
+
+            if (HttpRequestValid(request) && request.type == GET) {
+                //Assuming its the connection test, send a default response.
+                HttpResponse response;
+                HttpResponseInit(&response, request.version, HttpStatus_OK);
+                
+                HttpResponseAddOption(&response, "Content-type", "text/html");
+                HttpResponseAddOption(&response, "X-Organization", "Nintendo");
+                HttpResponseAddOption(&response, "Server", "BigIp");
+                HttpResponseAddOption(&response, "Content-length", "2");
+                
+                HttpResponseAddPayload(&response, "ok", strlen("ok"));
+
+                sendCustom(response, cur_fd);
+            }
+
+            HttpRequestFree(request);
+            if (client_offload) free(client_offload);
+            CotPollPop(server->poll, cur_fd);
+            serverCloseClient(cur_fd);
+        }
+    }
+}
+
+/*
+Debug function for capturing HTTPS packets sent between the DS and
+the Pokemon Classic Network.
+@arg server -> HTTPS ServerConfig proxy.
+@arg timeout -> polling timeout limit.
+@arg ctx -> OpenSSL Context for verifying packets.
+@arg output -> stream to print to.
+*/
+void HTTPS_proxy(ServerConfig* server, int timeout, SSL_CTX* ctx, FILE* output) {
+    if (!server || !ctx) {
+        fprintf(stderr, "HTTPS_proxy arguments invalid.\n");
+        if (output) fprintf(output, "HTTPS_proxy arguments invalid.\n");
+        return;
+    } 
+    
+    int ready_count = CotPollPoll(server->poll, timeout);
+    for (int index = 0; index < ready_count; index++) {
+        int cur_fd = CotPollAccess(server->poll, index);
+        if (cur_fd == server->server_fd) {
+            //new client
+            int client_fd = serverAcceptClient(server);
+            if (client_fd < 0) continue;
+            CotPollPush(server->poll, client_fd); 
+        }
+        else {
+            //existing client
+            fprintf(stderr, "----------HTTPS PROXY DEBUG START----------\n\n");
+            if (output) fprintf(output, "----------HTTPS PROXY DEBUG START----------\n\n");
+
+            //Ensure we send whole packets, instead of Linux default waiting
+            int nodelay_flag = 1;
+            setsockopt(cur_fd, IPPROTO_TCP, TCP_NODELAY, (char*)&nodelay_flag, sizeof(int));
+
+            //Allow SSL to decrypt the message.
+            SSL* ssl = SSL_new(ctx);
+            SSL_set_fd(ssl, cur_fd); //attach our current client to SSL.
+
+            //Perform the TLS handshake
+            //Due to CotPoll being non blocking, we need to account for this
+            //using wait loops
+            const int ssl_accept_timeout = 1000; //milliseconds
+            int ssl_accept = 0;
+            while ((ssl_accept = SSL_accept(ssl)) <= 0) {
+                int ssl_err = SSL_get_error(ssl, ssl_accept);
+
+                if (ssl_err == SSL_ERROR_WANT_READ) {
+                    //Waiting to read from client, so pause
+                    struct pollfd ssl_pfd = {.fd = cur_fd, .events=POLLIN};
+                    if (poll(&ssl_pfd, 1, ssl_accept_timeout) <= 0) {
+                        fprintf(stderr, "HANDSHAKE READ TIMEOUT\n");
+                        if (output) fprintf(output, "HANDSHAKE READ TIMEOUT\n");
+                        break;
+                    }
+                }
+                else if (ssl_err == SSL_ERROR_WANT_WRITE) {
+                    //Waiting to write to client, so pause
+                    struct pollfd ssl_pfd = {.fd = cur_fd, .events=POLLOUT};
+                    if (poll(&ssl_pfd, 1, ssl_accept_timeout) <= 0) {
+                        fprintf(stderr, "HANDSHAKE WRITE TIMEOUT\n");
+                        if (output) fprintf(output, "HANDSHAKE WRITE TIMEOUT\n");
+                        break;
+                    }
+                }
+                else {
+                    //Actual error
+                    ERR_print_errors_fp(stderr);
+                    fprintf(stderr, "HANDSHAKE FAILED, CODE: %i\n", ssl_err);
+                    if (output) fprintf(output, "HANDSHAKE FAILED, CODE: %i\n", ssl_err);
+                    break;
+                }
+            }
+            if (ssl_accept == 1) { //success
+                //We can now decrypt our NDS messages
+                //Also use wait polling here
+                char client_offload[2048] = {0}; 
+                int bytes = 0;
+                //while we think we are reading...
+                while ((bytes = SSL_read(ssl, client_offload, sizeof(client_offload) - 1)) <= 0) {
+                    int ssl_err = SSL_get_error(ssl, bytes);
+
+                    if (ssl_err == SSL_ERROR_WANT_READ) {
+                        //Waiting to read from client, so pause
+                        struct pollfd ssl_pfd = {.fd = cur_fd, .events=POLLIN};
+                        poll(&ssl_pfd, 1, ssl_accept_timeout); 
+                    }
+                    else {
+                        //error
+                        break;
+                    }
+                }
+
+                //bytes = SSL_read(ssl, client_offload, sizeof(client_offload) - 1); //for null terminator
+                
+                //Log the DS output in plain text
+                if (bytes > 0) {
+                    fprintf(stderr, "----------DS HTTPS REQUEST START----------\n\n%s\n\n----------DS HTTPS REQUEST END----------\n\n", client_offload);
+                    if (output) fprintf(output, "----------DS HTTPS REQUEST START----------\n\n%s\n\n----------DS HTTPS REQUEST END----------\n\n", client_offload);
+                }
+                else {
+                    fprintf(stderr, "NO ENCRYPTED DS MESSAGE FOUND\n\n");
+                    if (output) fprintf(output, "NO ENCRYPTED DS MESSAGE FOUND\n\n");
+                }
+
+                //Deal with ilostmymind.xyz
+                char target_ip[50] = {0};
+                if (strstr(client_offload, "Host: dls1.ilostmymind.xyz")) strcpy(target_ip, "195.201.236.139");
+                else strcpy(target_ip, PCN_IP);
+                
+                //Set up a connection to PCN
+                int pcn_status = 0;
+                struct addrinfo pcn_hints;
+                struct addrinfo* pcn_servinfo;
+                memset(&pcn_hints, 0, sizeof(struct addrinfo));
+                pcn_hints.ai_family = AF_UNSPEC;
+                pcn_hints.ai_socktype = SOCK_STREAM;
+
+                //PCN probably listens on port 443 directly.
+                pcn_status = getaddrinfo(target_ip, PCN_HTTPS_PORT, &pcn_hints, &pcn_servinfo);
+                if (pcn_status != 0) {
+                    fprintf(stderr, "PCN GETADDRINFO FAILED:\n%s\n\n", gai_strerror(pcn_status));
+                    if (output) fprintf(output, "PCN GETADDRINFO FAILED:\n%s\n\n", gai_strerror(pcn_status));
+                    goto cleanup;
+                }
+
+                int pcn_fd = socket(pcn_servinfo->ai_family, pcn_servinfo->ai_socktype, pcn_servinfo->ai_protocol);
+                if (pcn_fd <= -1) {
+                    freeaddrinfo(pcn_servinfo);
+                    fprintf(stderr, "PCN SOCKET FAILED\n\n");
+                    if (output) fprintf(output, "PCN SOCKET FAILED\n\n");
+                    goto cleanup;
+                }
+
+                pcn_status = connect(pcn_fd, pcn_servinfo->ai_addr, pcn_servinfo->ai_addrlen);
+                if (pcn_status <= -1) {
+                    close(pcn_fd);
+                    freeaddrinfo(pcn_servinfo);
+                    fprintf(stderr, "PCN CONNECT FAILED\n\n");
+                    if (output) fprintf(output, "PCN CONNECT FAILED\n\n");
+                    goto cleanup;
+                }
+
+                //Once done, wrap the socket in SSL.
+                //First, generate a new context, that will accept PCN's public key.
+                //Ensure it matches the same config as ctx
+                const SSL_METHOD* pcn_method = TLS_client_method();
+                SSL_CTX* pcn_ctx = SSL_CTX_new(pcn_method);
+                
+                SSL_CTX_set_security_level(pcn_ctx, 0);
+                SSL_CTX_set_min_proto_version(pcn_ctx, SSL3_VERSION);
+                SSL_CTX_set_max_proto_version(pcn_ctx, SSL3_VERSION);
+                SSL_CTX_set_cipher_list(pcn_ctx, "RC4-MD5:RC4-SHA:DES-CBC3-SHA:@SECLEVEL=0");
+                SSL_CTX_set_verify(pcn_ctx, SSL_VERIFY_NONE, NULL);                
+                
+                //Then, set up the handshake.
+                SSL* pcn_ssl = SSL_new(pcn_ctx);
+                SSL_set_fd(pcn_ssl, pcn_fd);
+                pcn_status = SSL_connect(pcn_ssl);
+                if (pcn_status <= 0) {
+                    SSL_shutdown(pcn_ssl);
+                    SSL_free(pcn_ssl);
+                    close(pcn_fd);
+                    freeaddrinfo(pcn_servinfo);
+                    fprintf(stderr, "PCN HANDSHAKE FAILED\n\n");
+                    if (output) fprintf(output, "PCN HANDSHAKE FAILED\n\n");
+                    goto cleanup;
+                }
+
+                //Also, set the HTTP version to 1.0
+                //Thats just how the DS does things
+                char* http_ver = strstr(client_offload, "HTTP/1.1");
+                if (http_ver) {
+                    http_ver[7] = '0'; // 1.1 -> 1.0
+                }
+
+                //Success! Write the DS output to PCN.
+                SSL_write(pcn_ssl, client_offload, bytes);
+
+                //Listen to PCN's response and log it.
+                memset(client_offload, 0, sizeof(client_offload));
+                int pcn_total_bytes = 0;
+
+                while (pcn_total_bytes < sizeof(client_offload) - 1) {
+                    int pcn_cur_space = sizeof(client_offload) - 1 - pcn_total_bytes;
+                    bytes = SSL_read(pcn_ssl, client_offload + pcn_total_bytes, pcn_cur_space);
+
+                    if (bytes > 0) pcn_total_bytes += bytes;
+                    else break;
+
+                }
+                if (pcn_total_bytes > 0) {
+                    fprintf(stderr, "----------PCN HTTPS RESPONSE START----------\n\n%s\n\n----------PCN HTTPS RESPONSE END----------\n\n", client_offload);
+                    if (output) fprintf(output, "----------PCN HTTPS RESPONSE START----------\n\n%s\n\n----------PCN HTTPS RESPONSE END----------\n\n", client_offload);
+                    
+                    //CAPTURE THE MYG FILE (for IVgift analysis)
+                    if (strstr(client_offload, "filename") != NULL) {
+                        //The only packet with the .myg file, has "filename" in the HTTP raw buffer.
+                        //We use strstr to get the Content-Length, use atoi to convert into number,
+                        //then start reading client_offload from pcn_total_bytes for Content-Length
+                        char* content_length_ptr = strstr(client_offload, "Content-Length: ");
+                        if (content_length_ptr) {
+                            content_length_ptr += strlen("Content-Length: ");
+                            char content_length_str[10] = {0};
+                            int i = 0;
+                            while (*(content_length_ptr) != '\r') {
+                                content_length_str[i++] = *content_length_ptr;
+                                content_length_ptr++;
+                            }
+                            int content_length = atoi(content_length_str);
+                            fprintf(stderr,"CLSTR: %s, CLVAL: %i\n\n", content_length_str, content_length);
+                            int myg_pointer = pcn_total_bytes - content_length, myg_stride = content_length;
+                            fprintf(stderr, "MYG POINTER: %i, MYG STRIDE: %i\n\n", myg_pointer, myg_stride);
+                            //Open up a new binary file.
+                            FILE* myg_file = fopen("/tmp/ivnet/gift.myg", "wb");
+                            fwrite(&client_offload[myg_pointer], 1, myg_stride, myg_file);
+                            fclose(myg_file);
+                        }
+                    }
+
+                    //Forward this to the DS.
+                    int pcn_cur_bytes = 0;
+                    while (pcn_cur_bytes < pcn_total_bytes) {
+                        int written = SSL_write(ssl, client_offload + pcn_cur_bytes, pcn_total_bytes - pcn_cur_bytes);
+                        if (written <= 0) {
+                            int err = SSL_get_error(ssl, written);
+                            if (err == SSL_ERROR_WANT_WRITE || err == SSL_ERROR_WANT_READ) {
+                                //Buffer full, continue reading.
+                                usleep(1000);
+                                continue;
+                            }
+                            else break; //drop connection.
+                        }
+                        pcn_cur_bytes += written;
+                    }
+                    fprintf(stderr, "PROXY DELIVERED %d / %d BYTES\n\n", pcn_cur_bytes, pcn_total_bytes);
+                    if (output) fprintf(output, "PROXY DELIVERED %d / %d BYTES\n\n", pcn_cur_bytes, pcn_total_bytes);
+                    
+                    //Shutdown gracefully.
+                    int shutdown_ret = SSL_shutdown(ssl);
+                    if (shutdown_ret == 0) {
+                        // 2. Wait for the DS to send its Close Notify alert back
+                        int ret = 0;
+                        while ((ret = SSL_shutdown(ssl)) < 0) {
+                            int err = SSL_get_error(ssl, ret);
+                            if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+                                usleep(1000); // Wait for the DS to acknowledge
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+
+                }
+                else {
+                    fprintf(stderr, "PCN NO MESSAGE\n\n");
+                    if (output) fprintf(output, "PCN NO MESSAGE\n\n");
+                }
+
+                //Cleanup PCN SSL
+                SSL_shutdown(pcn_ssl);
+                SSL_free(pcn_ssl);
+                SSL_CTX_free(pcn_ctx);
+                close(pcn_fd);
+            }
+
+            cleanup:
+            fprintf(stderr, "----------HTTPS PROXY DEBUG END----------\n\n");
+            if (output) fprintf(output, "----------HTTPS PROXY DEBUG END----------\n\n");
+            SSL_shutdown(ssl);
+            SSL_free(ssl);
+            CotPollPop(server->poll, cur_fd);
+            serverCloseClient(cur_fd);
+        }
+    }
+}
+
+/*
+Debug function for capturing GameSpy packets sent between the DS and
+the Pokemon Classic Network.
+@arg server -> HTTP ServerConfig to manage.
+@arg timeout -> polling timeout limit.
+@arg output -> stream to print to.
+*/
+void RAWTCP_proxy(ServerConfig* server, int timeout, FILE* output) {
+    if (!server) {
+        fprintf(stderr, "HTTP_proxy arguments invalid.\n");
+        if (output) fprintf(output, "HTTP_proxy arguments invalid.\n");
+        return;
+    }
+
+    //Due to multiple DS's being able to connect at once,
+    //we need to link each DS socket to a PCN socket.
+    //For debugging purposes, first work with 1 DS.
+    static int ds_fd = 0;
+    static int pcn_fd = 0;
+
+    int ready_count = CotPollPoll(server->poll, timeout);
+    for (int i = 0; i < ready_count; i++) {
+        int cur_fd = CotPollAccess(server->poll, i);
+        if (cur_fd == server->server_fd) {
+            //new client
+            int client_fd = serverAcceptClient(server);
+            if (client_fd < 0) continue;
+            CotPollPush(server->poll, client_fd); 
+            //Update links
+            ds_fd = client_fd;
+            fprintf(stderr, "///////RAWTCP PROXY CONNECTION STARTED/////////\n\n");
+            if (output) fprintf(output, "///////RAWTCP PROXY CONNECTION STARTED/////////\n\n");
+            
+            //Set up a new PCN socket.
+            int pcn_status = 0;
+            struct addrinfo pcn_hints;
+            struct addrinfo* pcn_servinfo;
+            memset(&pcn_hints, 0, sizeof(struct addrinfo));
+            pcn_hints.ai_family = AF_UNSPEC;
+            pcn_hints.ai_socktype = SOCK_STREAM;
+
+            //PCN probably listens on port 443 directly.
+            pcn_status = getaddrinfo(PCN_IP, PCN_RAWTCP_PORT, &pcn_hints, &pcn_servinfo);
+            if (pcn_status != 0) {
+                fprintf(stderr, "PCN GETADDRINFO FAILED:\n%s\n\n", gai_strerror(pcn_status));
+                if (output) fprintf(output, "PCN GETADDRINFO FAILED:\n%s\n\n", gai_strerror(pcn_status));
+                CotPollPop(server->poll, ds_fd);
+                close(ds_fd);
+                continue;
+            }
+
+            pcn_fd = socket(pcn_servinfo->ai_family, pcn_servinfo->ai_socktype, pcn_servinfo->ai_protocol);
+            if (pcn_fd <= -1) {
+                freeaddrinfo(pcn_servinfo);
+                fprintf(stderr, "PCN SOCKET FAILED\n\n");
+                if (output) fprintf(output, "PCN SOCKET FAILED\n\n");
+                CotPollPop(server->poll, ds_fd);
+                close(ds_fd);
+                continue;
+            }
+
+            pcn_status = connect(pcn_fd, pcn_servinfo->ai_addr, pcn_servinfo->ai_addrlen);
+            if (pcn_status <= -1) {
+                close(pcn_fd);
+                freeaddrinfo(pcn_servinfo);
+                fprintf(stderr, "PCN CONNECT FAILED\n\n");
+                if (output) fprintf(output, "PCN CONNECT FAILED\n\n");
+                CotPollPop(server->poll, ds_fd);
+                close(ds_fd);
+                continue;
+            }
+
+            //Add it to our polling.
+            CotPollPush(server->poll, pcn_fd);
+
+            fprintf(stderr, "///////RAWTCP PROXY PCN STARTED/////////\n\n");
+            if (output) fprintf(output, "///////RAWTCP PROXY PCN STARTED/////////\n\n");
+        }
+        else {
+            //existing client
+            fprintf(stderr, "----------RAWTCP PROXY DEBUG START----------\n\n");
+            if (output) fprintf(output, "----------RAWTCP PROXY DEBUG START----------\n\n");
+            
+
+            int bytes = 0;
+            char* client_offload = serverRecvClient(cur_fd, &bytes);
+
+            //Check who sent it.
+            if (cur_fd == ds_fd) {
+                if (client_offload) {
+                    fprintf(stderr, "----------DS RAWTCP REQUEST START----------\n\n%s\n\n----------DS RAWTCP REQUEST END----------\n\n", client_offload);
+                    if (output) fprintf(output, "----------DS RAWTCP REQUEST START----------\n\n%s\n\n----------DS RAWTCP REQUEST END----------\n\n", client_offload);
+                
+                    //Forward to PCN
+                    send(pcn_fd, client_offload, bytes, 0);
+                }
+                else {
+                    fprintf(stderr, "NO DS MESSAGE FOUND\n\n");
+                    if (output) fprintf(output, "NO DS MESSAGE FOUND\n\n");
+                    
+                    //Close the connection.
+                    CotPollPop(server->poll, ds_fd);
+                    serverCloseClient(ds_fd);
+                    CotPollPop(server->poll, pcn_fd);
+                    serverCloseClient(pcn_fd);
+                }
+            }
+            else if (cur_fd == pcn_fd) {
+                if (client_offload) {
+                    fprintf(stderr, "----------PCN RAWTCP REQUEST START----------\n\n%s\n\n----------PCN RAWTCP REQUEST END----------\n\n", client_offload);
+                    if (output) fprintf(output, "----------PCN RAWTCP REQUEST START----------\n\n%s\n\n----------PCN RAWTCP REQUEST END----------\n\n", client_offload);
+                
+                    //Forward to DS
+                    send(ds_fd, client_offload, bytes, 0);
+                }
+                else {
+                    fprintf(stderr, "NO PCN MESSAGE FOUND\n\n");
+                    if (output) fprintf(output, "NO PCN MESSAGE FOUND\n\n");
+                
+                    //Close the connection.
+                    CotPollPop(server->poll, ds_fd);
+                    serverCloseClient(ds_fd);
+                    CotPollPop(server->poll, pcn_fd);
+                    serverCloseClient(pcn_fd);
+                }
+            }
+
+
+            fprintf(stderr, "----------RAWTCP PROXY DEBUG END----------\n\n");
+            if (output) fprintf(output, "----------RAWTCP PROXY DEBUG END----------\n\n");
+            
+
+            if (client_offload) free(client_offload);
+        }
+    }
+}
+
+#endif
 
 /*
 The role of the backend is to:
@@ -100,6 +1433,17 @@ The role of the backend is to:
     Clean up and restore the NID once complete.
 */
 int main(int argc, char** argv) {
+    #if defined(ENABLE_LOCALHOST)
+    //Enable cottage
+    cottageInit();
+    #endif
+
+    #if defined(ENABLE_LOCALHOST)
+    ServerConfig* server_http = NULL;
+    ServerConfig* server_https = NULL;
+    //ServerConfig* server_rawtcp = NULL;
+    #endif
+
     //disable line buffering for printf messaging to work
     setvbuf(stdout, NULL, _IOLBF, 0);
 
@@ -111,28 +1455,71 @@ int main(int argc, char** argv) {
         printf("IVnet:0:Must run as root\n");
         return 1;
     }
-    
+
+
     /*
-    arguments consist of 
-        NIC, 
-        DNS, 
-        country code, 
-        and SSID.
+    Following requirements are required
+        NID
+        DNS
+        country code
+        SSID
+    
+    Following requirements are optional
+        Certificate folder location
+        Mystery gift folder
     */
-    const int 
-    arg_max = 4 + 1;
-    if (argc < arg_max) {
-        printf("IVnet:0:Not enough parameters\n");
-        perror("IVnet requires:\nname of NIC,\nDNS to connect to,\nISO 3166-1 alpha-2 country code,\nSSID to assign\n");
-        return 1;
+
+    //Macro for argument checking
+    #define flagExists(flag, args, arg_index) ((arg_index) + 1 < (argc) && strcmp((args)[(arg_index)], (flag)) == 0)
+
+    for (int i = 1; i < argc; i++) {
+        if (flagExists(dongle_f, argv, i)) {
+            dongle = argv[++i];
+        }
+        else if (flagExists(DNS_f, argv, i)) {
+            DNS = argv[++i];
+        }
+        else if (flagExists(country_code_f, argv, i)) {
+            country_code = argv[++i];
+        }
+        else if (flagExists(SSID_f, argv, i)) {
+            SSID = argv[++i];
+        }
+
+        else if (flagExists(cert_path_f, argv, i)) {
+            cert_path = argv[++i];
+        }
+        else if (flagExists(myg_path_f, argv, i)) {
+            myg_path = argv[++i];
+        }
+
+        else if (flagExists(proxy_path_f, argv, i)) {
+            proxy_path = argv[++i];
+        }
     }
 
+    if (!dongle || !DNS || !country_code || !SSID) {
+        printf("IVnet:0:Not enough parameters\n");
+        fprintf(stderr, 
+        "\n"
+        "ivnetback - Backend program for IVnet\n\n"
+        "=====================================\n\n"
+        "ARGUMENTS:\n"
+        "\nREQUIRED\n"
+        "     %s - Network Interface Device system name\n"
+        "     %s - DNS connection target\n"
+        "     %s - ISO 3166-1 alpha-2 country code\n"
+        "     %s - SSID to assign to access point\n"
+        "\nLOCALHOST\n"
+        "     %s - System path to HTTPS certificate file folder\n"
+        "     %s - System path to Mystery Gift .myg file folder\n"
+        "\nPROXY_DEBUG\n"
+        "     %s - System path to output of captured HTTP/HTTPS/TCP packets\n"
+        "\nFor more info, visit https://github.com/vixthevix/IVnet \n\n",
+        dongle_f, DNS_f, country_code_f, SSID_f, cert_path_f, myg_path_f, proxy_path_f);
 
-
-    char* dongle = argv[1];
-    char* DNS = argv[2];
-    char* country_code = argv[3];
-    char* SSID = argv[4];
+        return 1;
+    }
     
     int status = 0;
 
@@ -190,7 +1577,72 @@ int main(int argc, char** argv) {
         printf("IVnet:0:DNS invalid\n");
         return 1;
     }
+
+
+
+    //Are we hosting locally?
+    bool localhost_comp = false;
+    #if defined(ENABLE_LOCALHOST)
+    localhost_comp = true;
+    #endif
+
+    bool localhost = strcmp(DNS, "0.0.0.0") == 0;
+    char local_address[50] = {0};
+    const char* port_http = "8080";
+    const char* port_https = "8443";
+    const char* port_rawtcp = "29900";
+
+    if (localhost && !localhost_comp) {
+        printf("IVnet:0:ENABLE_LOCALHOST comp flag not set.");
+        return 1;
+    }
+
+    //Are we using the proxy debug functionality?
+    bool proxy_enabled = false;
+    #if defined(ENABLE_PROXY_DEBUG)
+    proxy_enabled = localhost;
+    #endif
+
+
+    //verify certificate path and files exist.
+    const char
+    *crt_name = "nwc.crt",
+    *key_name = "nwc.key";
+
+    if (localhost) {
+        if (!cert_path) {
+            printf("IVnet:0:certificate path not set.");
+            return 1;
+        }
+        //look for the file names
+        bool cert_found = false, key_found = false;
+
+        DIR* cert_dir = opendir(cert_path);
+        if (!cert_dir) {
+            printf("IVnet:0:could not open certificate folder.");
+            return 1;
+        }
+
+        struct dirent* dentry = NULL;
+
+        while ((dentry = readdir(cert_dir)) != NULL) {
+            if (strcmp(dentry->d_name, crt_name) == 0) cert_found = true;
+
+            if (strcmp(dentry->d_name, key_name) == 0) key_found = true;
+
+            if (key_found && cert_found) break;
+        }
+
+        closedir(cert_dir);
+
+        if (!key_found || !cert_found) {
+            printf("IVnet:0:no nwc.crt or nwc.key in cert folder.");
+            return 1;
+        }
+    }
     
+
+
     //verify countrycode
     //must be 2 characters long, and be in all caps
     if (!country_code) {
@@ -285,7 +1737,17 @@ int main(int argc, char** argv) {
         printf("IVnet:0:ip collision, error\n");
         return 1;
     }
-    
+
+
+    //Update the frontend with the new selected DNS, due to localhost.
+    if (localhost) printf("IVnet:DNS:%u.%u.%u.%u\n", dongle_ip[0], dongle_ip[1], dongle_ip[2], dongle_ip[3]);
+    else printf("IVnet:DNS:%s\n", DNS);
+
+    //Update our local address.
+    sprintf(local_address, "%u.%u.%u.%u", dongle_ip[0], dongle_ip[1], dongle_ip[2], dongle_ip[3]);
+
+
+
     //Temporarily remove current WiFi setup of dongle,
     //and replace it as an acces point.
 
@@ -396,12 +1858,34 @@ int main(int argc, char** argv) {
     //dnsmasq is a program that, for our purposes, will allow the dongle to hand out ip addresses to connected devices to be recognised for communication, such as the Nintendo DS.
     //to be running for 3 hours only.
     //hands out ip address in the range 10 to 50, so a max of 40 Devices can connect at once.
-    const char* dnsmasq_contents = 
+    const char* dnsmasq_contents_foreign = 
     "port=0\n"
     "interface=%1$s\n" //dongle name
     "bind-interfaces\n"
     "dhcp-range=%2$u.%3$u.%4$u.10,%2$u.%3$u.%4$u.50,3h\n" //dongle access point range and timer
     "dhcp-option=6,%5$s\n"; //DNS
+
+    const char* dnsmasq_contents_local = 
+    "interface=%1$s\n" //dongle name
+    "bind-interfaces\n"
+    "dhcp-range=%2$u.%3$u.%4$u.10,%2$u.%3$u.%4$u.50,3h\n" //dongle access point range and timer
+    "dhcp-option=3,%2$u.%3$u.%4$u.%5$u\n" // <--- ADD THIS: Default Gateway
+    "dhcp-option=6,%2$u.%3$u.%4$u.%5$u\n" //DNS
+    "address=/#/%2$u.%3$u.%4$u.%5$u\n"; //spoofing rule: intercept every request to the server
+
+    //USED FOR PROXY
+    const char* dnsmasq_contents_proxy = 
+    "interface=%1$s\n"
+    "bind-interfaces\n"
+    "server=178.62.43.212\n" // Wiimfi DNS
+    "dhcp-range=%2$u.%3$u.%4$u.10,%2$u.%3$u.%4$u.50,3h\n"
+    "dhcp-option=3,%2$u.%3$u.%4$u.%5$u\n" // gateway
+    "dhcp-option=6,%2$u.%3$u.%4$u.%5$u\n" //DNS
+    // probably needed
+    "address=/dls1.ilostmymind.xyz/%2$u.%3$u.%4$u.%5$u\n"
+    "address=/nas.nintendowifi.net/%2$u.%3$u.%4$u.%5$u\n"
+    "address=/conntest.nintendowifi.net/%2$u.%3$u.%4$u.%5$u\n";
+
 
     //Write out the config files
     FILE* hostapd = fopen("/tmp/ivnet/hostapd.conf", "w");
@@ -411,30 +1895,42 @@ int main(int argc, char** argv) {
     }
     fprintf(hostapd, hostapd_contents, dongle_new, country_code, SSID);
     fclose(hostapd);
+    
     FILE* dnsmasq = fopen("/tmp/ivnet/dnsmasq.conf", "w");
     if (!dnsmasq) {
         printf("IVnet:0:could not open dnsmasq.conf\n");
         return 1;
     }
-    fprintf(dnsmasq, dnsmasq_contents, dongle_new, dongle_ip[0], dongle_ip[1], dongle_ip[2], DNS);
+    if (proxy_enabled)  fprintf(dnsmasq, dnsmasq_contents_proxy,   dongle_new, dongle_ip[0], dongle_ip[1], dongle_ip[2], dongle_ip[3]);
+    else if (localhost) fprintf(dnsmasq, dnsmasq_contents_local,   dongle_new, dongle_ip[0], dongle_ip[1], dongle_ip[2], dongle_ip[3]);
+    else                fprintf(dnsmasq, dnsmasq_contents_foreign, dongle_new, dongle_ip[0], dongle_ip[1], dongle_ip[2], DNS);
     fclose(dnsmasq);
 
     //ip_forward is a parameter file that turns your Linux computer into a router
-    FILE* ip_forward = fopen("/proc/sys/net/ipv4/ip_forward", "w");
-    if (!ip_forward) {
-        printf("IVnet:0:could not open ip_forward file.\n");
-        return 1;
-    }
-    fwrite("1", sizeof(char), 1, ip_forward);
-    fclose(ip_forward);
+    system("sysctl -w net.ipv4.ip_forward=1");
     
     //iptables is a program that configures the Linux Firewall.
     //iptables works with multiple tables, we are using the nat table, which means "network address translation" ie. port forwarding
     //each table has a set of rules to follow called chains. We are going to follow the POSTROUTING chain within nat, which deals with altering outgoing packets from the local network
     //the MASQUERADE jump option tells us that "if we get a matching valid packet, set the source address to the router connected to the internet", to allow for outgoing packets
-    char traffic_rule[100] = {0};
-    sprintf(traffic_rule, "iptables -t nat -A POSTROUTING -j MASQUERADE");
-    system(traffic_rule);
+    sprintf(cmd, "iptables -t nat -A POSTROUTING -j MASQUERADE");
+    system(cmd);
+
+    if (localhost) {
+        //we have to redirect all traffic to port 8080 for localhost.
+        
+        //HTTP requests
+        sprintf(cmd, "iptables -t nat -A PREROUTING -i %s -d %s -p tcp --dport 80 -j REDIRECT --to-port %s", dongle_new, local_address, port_http);
+        system(cmd);
+        //HTTPS requests
+        sprintf(cmd, "iptables -t nat -A PREROUTING -i %s -d %s -p tcp --dport 443 -j REDIRECT --to-port %s", dongle_new, local_address, port_https);
+        system(cmd);
+
+        //RAWTCP requests
+        // sprintf(cmd, "iptables -t nat -A PREROUTING -i %s -p tcp --dport %s -j REDIRECT --to-port %s", dongle_new, port_rawtcp, port_rawtcp);
+        // system(cmd);
+    }
+
 
     //Create the hostapd and dnsmasq child proceses
     pid_t hostapd_p = 0, dnsmasq_p = 0;
@@ -449,8 +1945,16 @@ int main(int argc, char** argv) {
         //process death if backend death
         prctl(PR_SET_PDEATHSIG, SIGKILL);
 
+
+        int null_fd = open("/dev/null", O_WRONLY);
+        if (null_fd != -1) {
+            dup2(null_fd, STDOUT_FILENO);
+            dup2(null_fd, STDERR_FILENO);
+            close(null_fd);
+        }
+
         //Debug code for hostapd
-        // //redirect stdin to null to disconnect from frontend-backend communication
+        //redirect stdin to null to disconnect from frontend-backend communication
         // int null_fd = open("/dev/null", O_RDONLY);
         // if (null_fd != -1) {
         //     dup2(null_fd, STDIN_FILENO);
@@ -475,7 +1979,7 @@ int main(int argc, char** argv) {
 
         execvp("hostapd", hostapd_args); 
         perror("Failed to start hostpad\n");
-        exit(1);
+        goto cleanup;
     }
     else { //parent
         dnsmasq_p = fork();
@@ -487,6 +1991,12 @@ int main(int argc, char** argv) {
         
             //process death if backend death
             prctl(PR_SET_PDEATHSIG, SIGKILL);
+            int null_fd = open("/dev/null", O_WRONLY);
+            if (null_fd != -1) {
+                dup2(null_fd, STDOUT_FILENO);
+                dup2(null_fd, STDERR_FILENO);
+                close(null_fd);
+            }
             
             char* dnsmasq_args[] = {
                 "dnsmasq",
@@ -497,49 +2007,222 @@ int main(int argc, char** argv) {
             };
             execvp("dnsmasq", dnsmasq_args);
             perror("Failed to start dnsmasq\n");
-            exit(1);
+            goto cleanup;
         }
+    }
+
+    usleep(100000); // Give children 100ms to throw an error if they fail
+    if (kill(dnsmasq_p, 0) != 0) {
+        printf("IVnet:0:dnsmasq failed to start. Check configuration syntax.\n");
+        kill(hostapd_p, SIGKILL);
+        goto cleanup;
+    }
+    if (kill(hostapd_p, 0) != 0) {
+        printf("IVnet:0:hostapd failed to start.\n");
+        goto cleanup;
     }
     
     //If child processes did not fail to start, we're golden.
     printf("IVnet:1:Success!\n");
 
-    //We wait for either a termination signal (running)
-    //Or for the frontend to close the signal pipe
-    char wait_buffer;
-    while (running && read(STDIN_FILENO, &wait_buffer, 1) > 0) {
-        //check if dnsmasq or hostapd have failed
-        //kill command can check status of process when signal is 0
-        if (kill(hostapd_p, 0) != 0) {
-            if (errno == ESRCH) {
-                printf("IVnet:0:hostapd terminated early\n");
-                break;
+
+    if (localhost) {
+        #if defined(ENABLE_LOCALHOST)
+        //We need an IP address and port.
+
+        const int client_max = 64; //64 systems should be good.
+
+        //Set up our servers
+        server_http = serverInit(local_address, port_http, client_max);
+        if (!server_http) {
+            printf("IVnet:0:could not set up cotttage HTTP server.");
+            goto cleanup;   
+        }
+        server_https = serverInit(local_address, port_https, client_max);
+        if (!server_https) {
+            printf("IVnet:0:could not set up cotttage HTTPS server.");
+            goto cleanup;   
+        }
+        // server_rawtcp = serverInit(local_address, port_rawtcp, client_max);
+        // if (!server_https) {
+        //     printf("IVnet:0:could not set up cotttage HTTPS server.");
+        //     goto cleanup;   
+        // }
+        //Set up OpenSSL
+
+        //Normal OpenSSL setup
+        SSL_library_init();
+        OpenSSL_add_all_algorithms();
+        SSL_load_error_strings();
+
+        //SSL context
+        //const SSL_METHOD* method = TLS_server_method();
+        const SSL_METHOD* method = SSLv23_server_method();
+        SSL_CTX* ctx = SSL_CTX_new(method);
+        if (!ctx) {
+            ERR_print_errors_fp(stderr); //OpenSSL error handling
+            printf("IVnet:0:could not set up OpenSSL.");
+            goto cleanup;
+        }
+
+        //Drop security to accept SSLv3 (needed for DS)
+        SSL_CTX_set_security_level(ctx, 0);
+        
+        //ONLY SSLv3
+        SSL_CTX_set_min_proto_version(ctx, SSL3_VERSION);
+        SSL_CTX_set_max_proto_version(ctx, SSL3_VERSION);
+        
+        //Update cipher list to include older ciphers
+        //SSL_CTX_set_cipher_list(ctx, "ALL:@SECLEVEL=0");
+        if (SSL_CTX_set_cipher_list(ctx, "RC4-MD5:RC4-SHA:DES-CBC3-SHA:@SECLEVEL=0") != 1) {
+            printf("IVnet:0:failed to set cipher list");
+            goto cleanup;
+        }
+        //For compatibility with possibly broken SSL implementations
+        SSL_CTX_set_options(ctx, SSL_OP_ALL);
+
+        //Create the chain file, using certificate and key.
+        //Should be passed in as arguments to ivnetback.
+
+        const int crt_maxlen = strlen(cert_path) + 50;
+        const int key_maxlen = crt_maxlen;
+
+        char* crt = (char*) calloc(crt_maxlen, sizeof(char));
+        if (crt) snprintf(crt, crt_maxlen, "%s/%s", cert_path, crt_name);
+
+        char* key = (char*) calloc(key_maxlen, sizeof(char));
+        if (key) snprintf(key, key_maxlen, "%s/%s", cert_path, key_name);
+
+        bool chain_status = createLocalChain(crt, key);
+        if (crt) free(crt);
+        if (key) free(key);
+
+        if (!chain_status) {
+            printf("IVnet:0:could not create files needed for localhost");
+            goto cleanup;
+        }
+
+
+
+        //Load chain file
+        if (SSL_CTX_use_certificate_chain_file(ctx, "/tmp/ivnet/server.chain.crt") <= 0) {
+            printf("IVnet:0:failed to load chain file");
+            goto cleanup;
+        }
+        //Load server private key
+        if (SSL_CTX_use_PrivateKey_file(ctx, "/tmp/ivnet/server.key", SSL_FILETYPE_PEM) <= 0) {
+            printf("IVnet:0:failed to load server private key");
+            goto cleanup;
+        }
+        //Verify server private key with certificate public key
+        if (!SSL_CTX_check_private_key(ctx)) {
+            printf("IVnet:0:could not verify private key");
+            goto cleanup;
+        }
+
+        //Success! We can now decrypt NDS messages.
+        cleanLocalChain();
+
+        #ifdef ENABLE_PROXY_DEBUG
+        FILE* proxy_output = NULL;
+        if (proxy_path) proxy_output = fopen(proxy_path, "w");
+        #endif
+
+        char wait_buffer;
+        while (running) {
+            //Because we are running a server, we have to have non-blocking checks for frontend connection status.
+            struct pollfd stdin_state = {.fd = STDIN_FILENO, .events=POLLIN};
+            if (poll(&stdin_state, 1, 0) > 0) { //last parameter is timeout. 0 means insant.
+                if (read(STDIN_FILENO, &wait_buffer, 1) <= 0) break;
+            }
+
+            //Server polling
+            const int timeout = 100; //milliseconds
+            #ifndef ENABLE_PROXY_DEBUG
+            HTTP_manage(server_http, timeout);
+            HTTPS_manage(server_https, timeout, ctx);
+            #else
+            HTTP_proxy(server_http, timeout, proxy_output);
+            HTTPS_proxy(server_https, timeout, ctx, proxy_output);
+            //RAWTCP_proxy(server_rawtcp, timeout, &proxy_output);
+            #endif
+            //check if dnsmasq or hostapd have failed
+            //kill command can check status of process when signal is 0
+            if (kill(hostapd_p, 0) != 0) {
+                if (errno == ESRCH) {
+                    printf("IVnet:0:hostapd terminated early\n");
+                    break;
+                }
+            }
+            if (kill(dnsmasq_p, 0) != 0) {
+                if (errno == ESRCH) {
+                    printf("IVnet:0:dnsmasq terminated early\n");
+                    break;
+                }
             }
         }
-        if (kill(dnsmasq_p, 0) != 0) {
-            if (errno == ESRCH) {
-                printf("IVnet:0:dnsmasq terminated early\n");
-                break;
+
+        #ifdef ENABLE_PROXY_DEBUG
+        if (proxy_output) fclose(proxy_output);
+        #endif
+
+        #endif
+    }
+    else {
+        //We wait for either a termination signal (running)
+        //Or for the frontend to close the signal pipe
+        char wait_buffer;
+        while (running && read(STDIN_FILENO, &wait_buffer, 1) > 0) {
+            //check if dnsmasq or hostapd have failed
+            //kill command can check status of process when signal is 0
+            if (kill(hostapd_p, 0) != 0) {
+                if (errno == ESRCH) {
+                    printf("IVnet:0:hostapd terminated early\n");
+                    break;
+                }
+            }
+            if (kill(dnsmasq_p, 0) != 0) {
+                if (errno == ESRCH) {
+                    printf("IVnet:0:dnsmasq terminated early\n");
+                    break;
+                }
             }
         }
     }
 
-    perror("Killing backend...\n"); 
+    cleanup:
+    perror("Killing backend...\n");
+    
+    #if defined(ENABLE_LOCALHOST)
+    if (server_http) serverClose(server_http);
+    if (server_https) serverClose(server_https);
+    #endif
 
-    kill(hostapd_p, SIGKILL);
-    kill(dnsmasq_p, SIGKILL);
+    if (hostapd_p > 0) kill(hostapd_p, SIGKILL);
+    if (dnsmasq_p > 0) kill(dnsmasq_p, SIGKILL);
 
     //Disable iproutes outgoing traffic
     sprintf(cmd, "iptables -t nat -D POSTROUTING -j MASQUERADE");
     system(cmd);
 
-    //revert ip_forward
-    ip_forward = fopen("/proc/sys/net/ipv4/ip_forward", "w");
-    if (ip_forward) {
-        fwrite("0", sizeof(char), 1, ip_forward);
-        fclose(ip_forward);
-
+    if (localhost) {
+        //Stop rerouting to ports
+        sprintf(cmd, "iptables -t nat -D PREROUTING -i %s -d %s -p tcp --dport 80 -j REDIRECT --to-port %s", dongle_new, local_address, port_http);
+        system(cmd);
+        sprintf(cmd, "iptables -t nat -D PREROUTING -i %s -d %s -p tcp --dport 443 -j REDIRECT --to-port %s", dongle_new, local_address, port_https);
+        system(cmd);
+        // sprintf(cmd, "iptables -t nat -D PREROUTING -i %s -p tcp --dport %s -j REDIRECT --to-port %s", dongle_new, port_rawtcp, port_rawtcp);
+        // system(cmd);
     }
+
+    //revert ip_forward
+    system("sysctl -w net.ipv4.ip_forward=0");
+    // ip_forward = fopen("/proc/sys/net/ipv4/ip_forward", "w");
+    // if (ip_forward) {
+    //     fwrite("0", sizeof(char), 1, ip_forward);
+    //     fclose(ip_forward);
+
+    // }
 
     //Remove the new dongle from the system
     sprintf(cmd, "iw dev %s del > /dev/null 2>&1", dongle_new);

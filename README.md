@@ -124,7 +124,8 @@ All of the country codes can be found [here](https://en.wikipedia.org/wiki/ISO_3
 ### Extra steps
 Depending on where you live in the world and what your country code may be, you may need to tweak your local WiFi settings to accommodate for this (if your main Internet connection is via Ethernet, this shouldn't be an issue, maybe).
 
-For instance, as a UK resident, I had to manually change my router's DNS routing (to 8.8.8.8 for Google's services, for instance), due to UK rules on Internet providers changing DNS targeted packet destinations to their own servers; this would result in packets being sent to the official Nintendo servers, which are of course discontinued.
+For instance, as a UK resident, I had to manually change my router's DNS routing (to 8.8.8.8 for Google's services, for instance), due to UK rules on Internet providers changing DNS targeted packet destinations to their own servers; this would result in packets being sent to the official Nintendo servers, which are of course discontinued.<br>
+Alternatively, I could connect my PC to my iPhone's hotspot to connect to the servers succesfully.
 
 For more information on what to do for your specific circumstance, I recommend for now researching online on how to set your WiFi settings right for IVnet to work properly; with enough support, this information could also be available on this repository at some point in the future.
 
