@@ -1,27 +1,104 @@
-#!/bin/env bash
+#!/usr/bin/env bash
 #we are compiling ivnet and ivnetback
 
-mkdir bin
+CC="gcc"
+SRC="src"
+BIN="bin"
+FRONTEND="ivnet"
+BACKEND="ivnetback"
+TFD="tinyfiledialogs/tinyfiledialogs"
 
-gcc src/ivnetback.c -o bin/ivnetback
-success=$?
 
+# Check if help requested
+if [[ "$#" -ne 0 && $1 == "-h" ]]; then
+    
+    echo
+    echo "IVnet - Connect your Generation IV Pokemon games to the Internet!"
+    echo
+    echo "================================================================="
+    echo
+    echo "To build normally, run './ivnetMake' or 'bash ivnetMake'"
+    echo
+    echo "================================================================="
+    echo
+    echo "OPTIONAL ENV PARAMETERS"
+    echo "     ENABLE_LOCALHOST   - Builds with additional functionality for hosting a local server"
+    echo "     ENABLE_PROXY_DEBUG - Builds with additional functionality for acting as a proxy between"
+    echo "                          the DS and the Pokemon Classic Network (requires ENABLE_LOCALHOST)"
+    echo
+    echo "For more info, visit https://github.com/vixthevix/IVnet"
+    echo
 
-if [ $success -ne 0 ]; then
-    printf "\nCould not compile backend\n"
     exit
 fi
 
-gcc src/ivnet.c -o bin/ivnet -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
-success=$?
+mkdir -p $BIN
 
+# Check if we want localhost features as well.
+if [[ -z "${ENABLE_LOCALHOST}" ]]; then # No localhost
+    printf "Compiling normally...\n"
 
-if [ $success -ne 0 ]; then
-    printf "\nCould not compile frontend\n"
-    exit
+    BACKEND_LINKS="-lm"
+    FRONTEND_LINKS="-lraylib -lGL -lm -lpthread -ldl -lrt -lX11"
+
+    $CC $SRC/$BACKEND.c -o $BIN/$BACKEND $BACKEND_LINKS 
+    success=$?
+
+    if [ $success -ne 0 ]; then
+        printf "\nCould not compile backend\n"
+        exit
+    fi
+
+    $CC $SRC/$FRONTEND.c $SRC/$TFD.c -o $BIN/$FRONTEND $FRONTEND_LINKS
+    success=$?
+
+    if [ $success -ne 0 ]; then
+        printf "\nCould not compile frontend\n"
+        exit
+    fi
+else
+    printf "Compiling with local server functionality...\n"    
+
+    BACKEND_LINKS="-lm -lpthread -ldl"
+    OPENSSL="openssl-1.1.1w"
+    OPENSSL_SSL="libssl"
+    OPENSSL_CRYPTO="libcrypto"
+    OPENSSL_INCLUDE="include"
+
+    OPENSSL_LINK="https://github.com/openssl/openssl/releases/download/OpenSSL_1_1_1w/openssl-1.1.1w.tar.gz"
+    OPENSSL_CONFIG="enable-ssl3 enable-ssl3-method enable-weak-ssl-ciphers no-shared"
+
+    FRONTEND_LINKS="-lraylib -lGL -lm -lpthread -ldl -lrt -lX11"
+
+    #before compiling backend, get openssl 1.1.1
+    #check if we have openssl first
+    if [[ ! -f "$SRC/$OPENSSL/$OPENSSL_SSL.a" || ! -f "$SRC/$OPENSSL/$OPENSSL_CRYPTO.a" ]]; then
+        echo "${OPENSSL} not found, building..."
+        (cd $SRC && wget $OPENSSL_LINK && tar -xzf $OPENSSL.tar.gz && rm $OPENSSL.tar.gz)
+        (cd $SRC/$OPENSSL && ./config $OPENSSL_CONFIG && make)
+    fi
+
+    #for backend, also check if we have the proxy debug mode enabled
+    if [[ -z "${ENABLE_PROXY_DEBUG}" ]]; then
+        $CC -I$SRC/$OPENSSL/$OPENSSL_INCLUDE $SRC/$BACKEND.c $SRC/$OPENSSL/$OPENSSL_SSL.a $SRC/$OPENSSL/$OPENSSL_CRYPTO.a -o $BIN/$BACKEND -D ENABLE_LOCALHOST $BACKEND_LINKS
+    else
+        $CC -I$SRC/$OPENSSL/$OPENSSL_INCLUDE $SRC/$BACKEND.c $SRC/$OPENSSL/$OPENSSL_SSL.a $SRC/$OPENSSL/$OPENSSL_CRYPTO.a -o $BIN/$BACKEND -D ENABLE_LOCALHOST -D ENABLE_PROXY_DEBUG $BACKEND_LINKS
+    fi
+    success=$?
+
+    if [ $success -ne 0 ]; then
+        printf "\nCould not compile backend\n"
+        exit
+    fi
+
+    $CC $SRC/$FRONTEND.c $SRC/$TFD.c -o $BIN/$FRONTEND -D ENABLE_LOCALHOST $FRONTEND_LINKS
+    success=$?
+
+    if [ $success -ne 0 ]; then
+        printf "\nCould not compile frontend\n"
+        exit
+    fi
 fi
 
-printf "\nIVnet successfully compiled!\nRun 'bash ivnetRun' or 'bin/ivnet' to begin\n"
-printf "To run just the backend, run 'bin/ivnetback'\n"
-
-
+printf "\nIVnet successfully compiled!\nRun './ivnetRun', 'bash ivnetRun' or 'bin/ivnet' to begin\n"
+printf "To run just the backend, run 'sudo bin/ivnetback'\n"

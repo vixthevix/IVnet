@@ -8,20 +8,20 @@ Before you can compile IVnet, run:
 
 - **Debian/Ubuntu/Mint**
   ```
-  apt install build-essential git make iproute2 iw rfkill iptables hostapd dnsmasq
+  sudo apt install build-essential git make wget tar openssl libgl1-mesa-dev libx11-dev zenity iproute2 iw rfkill iptables hostapd dnsmasq
   ```
 - **Arch**
   ```
-  pacman -S base-devel git make iproute2 iw rfkill iptables hostapd dnsmasq
+  sudo pacman -S base-devel git make wget tar openssl zenity iproute2 iw rfkill iptables hostapd dnsmasq
   ```
 - **Fedora**
   ```
-  sudo dnf install @development-tools git iproute iw rfkill iptables hostapd dnsmasq
+  sudo dnf install @development-tools git wget tar openssl mesa-libGL-devel libX11-devel iproute iw rfkill iptables hostapd dnsmasq
   ```
 
 ### Build
 
-**Installing [raylib](https://github.com/raysan5/raylib)**:
+**Installing [raylib](https://github.com/raysan5/raylib)**
 
 IVnet uses raylib as its frontend, so ensure that it is installed on your system.
 
@@ -32,10 +32,41 @@ cd raylib/src
 make PLATFORM=PLATFORM_DESKTOP
 sudo make install
 ```
-**Building IVnet**:
+**Installing [cottage](https://github.com/vixthevix/cottage)**
+
+IVnet uses cottage for IVnet-L.
+
+To include it, run:
+```
+#In the IVnet folder...
+
+cd src
+git clone https://github.com/vixthevix/cottage.git
+
+#cottage is composed of header files, so no further building here.
+```
+
+**Building IVnet**
 
 Run `./ivnetMake` in the IVnet folder. Alternatively, run the script with your command line interpreter (e.g. `bash`, `zsh` etc.) or copy and run the `gcc` commands directly in your terminal. 
 
+Run with the `-h` flag for build tips:
+```
+IVnet - Connect your Generation IV Pokemon games to the Internet!
+
+=================================================================
+
+To build normally, run './ivnetMake' or 'bash ivnetMake'
+
+=================================================================
+
+OPTIONAL ENV PARAMETERS
+     ENABLE_LOCALHOST   - Builds with additional functionality for hosting a local server
+     ENABLE_PROXY_DEBUG - Builds with additional functionality for acting as a proxy between
+                          the DS and the Pokemon Classic Network (requires ENABLE_LOCALHOST)
+
+For more info, visit https://github.com/vixthevix/IVnet
+```
 
 ## Software guide
 
@@ -88,6 +119,11 @@ The backend takes 4 arguments:
 - A chosen SSID for the Access Point.
   - **Only by running the backend can you make a custom SSID**. This will be the name that shows up on the Nintendo WFC Access Point search results.
 
+### IVnet-L
+
+IVnet-L is the name for the localhost functionality of IVnet. Instead of connecting to an external server, it uses cottage to set up a HTTP and HTTPS server for communicating with the DS directly. <br>
+For more information on setting up IVnet-L, click [here](./assets/pages/IVnet-L.md).
+
 ## Hardware guide
 ### External Network Interface Devices
 I recommend using an external NID as the Access Point for IVnet, as it is less likely to pose a risk to your systems built-in network devices. <br>
@@ -121,12 +157,24 @@ IVnet requires that you configure your "country code" AKA your ISO 3166-1 alpha-
 
 All of the country codes can be found [here](https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2).
 
+### IVgift
+In tandem with the Mystery Gift transmission feature of IVnet-L, I have created a program for creating and editing Generation IV Mystery Gifts on the browser, [IVgift](https://github.com/vixthevix/IVgift).
+
+I have tested IVnet witha  variety of Mystery Gifts made using IVgift, and I can confirm that (for the most part), they are accepted by the games. Go try it out!
+
 ### Extra steps
 Depending on where you live in the world and what your country code may be, you may need to tweak your local WiFi settings to accommodate for this (if your main Internet connection is via Ethernet, this shouldn't be an issue, maybe).
 
-For instance, as a UK resident, I had to manually change my router's DNS routing (to 8.8.8.8 for Google's services, for instance), due to UK rules on Internet providers changing DNS targeted packet destinations to their own servers; this would result in packets being sent to the official Nintendo servers, which are of course discontinued.
+For instance, as a UK resident, I had to manually change my router's DNS routing (to 8.8.8.8 for Google's services, for instance), due to UK rules on Internet providers changing DNS targeted packet destinations to their own servers; this would result in packets being sent to the official Nintendo servers, which are of course discontinued.<br>
+Alternatively, I could connect my PC to my iPhone's hotspot to connect to the servers succesfully.
 
 For more information on what to do for your specific circumstance, I recommend for now researching online on how to set your WiFi settings right for IVnet to work properly; with enough support, this information could also be available on this repository at some point in the future.
+
+### Credits
+Many thanks to
+- The people behind [the Pokemon Classic Network](https://pkmnclassic.net/), [Wiimmfi](https://wiimmfi.de/), [Kaeru Team](https://kaeru.world/projects/wfc) and [AltWFC](https://github.com/barronwaffles/dwc_network_server_emulator), who pioneered these technologies and services.
+- [openssl](), for maintaining their very old (and luckily for us, unsecure) libaries.
+- My brother, who had to endure my yapping about this project and many others lmao.
 
 ### What's next?
 
